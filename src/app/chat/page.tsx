@@ -474,12 +474,14 @@ export default function ChatPage() {
                 }>
                   Aggro {gameContext.aggroLevel}
                 </Badge>
-                <Badge variant={
-                  gameContext.confidence >= 70 ? "default" :
-                  gameContext.confidence >= 50 ? "outline" : "destructive"
-                }>
-                  {gameContext.confidence.toFixed(0)}%
-                </Badge>
+                {gameContext.confidence != null && (
+                  <Badge variant={
+                    gameContext.confidence >= 70 ? "default" :
+                    gameContext.confidence >= 50 ? "outline" : "destructive"
+                  }>
+                    {gameContext.confidence.toFixed(0)}%
+                  </Badge>
+                )}
                 <Button
                   variant="ghost"
                   size="sm"
