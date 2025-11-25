@@ -38,7 +38,7 @@ const DEBUG = true
 const ODD_MIN = 1.4
 const ODD_MAX = 3.5
 
-// ==================== REGRAS GODMODE INTEGRADAS + AUTO-TUNING ====================
+// ==================== REGRAS GODMODE INTEGRADAS + AUTO-TUNING + vGODMODE 3.0 ====================
 
 const GODMODE_RULES = {
   // 1) PRIORIDADE
@@ -56,13 +56,18 @@ const GODMODE_RULES = {
     "Momentum", "Shadow xG", "Time Bomb", "Pattern Breaker", "Dead Game"
   ],
 
-  // 3) OPC - Oportunidade Secundária
+  // 3) OPC - Oportunidade Secundária (MODO BALANCEADO)
   opc: {
     activateWhen: "HA+ sem EV+",
     markets: ["Over 0.5/1.5", "Gol do time", "Under", "Cartões", "Escanteios", "Ambas Não", "Virada"],
     minSignals: 3,
-    minEV: 0.00, // OPC só com EV ≥ 0
-    noEV: "Nenhuma OPC válida"
+    minEV: -10, // OPC liberado com EV ≥ -10%
+    noEV: "Nenhuma OPC válida",
+    balancedMode: {
+      evThreshold: -10,
+      modulesRequired: 4, // 4 de 5 módulos positivos/neutros
+      modules: ["Roteiro confirmado", "Momentum ≥ neutro", "Shadow xG ≤ 0.15", "RDS ≥ 10", "Tendência 2T estável/positiva"]
+    }
   },
 
   // 4) EV DINÂMICO
@@ -87,7 +92,7 @@ const GODMODE_RULES = {
     fake: ["posse estéril", "chutes longos", "ataques sem penetração"]
   },
 
-  // 8) BLOQUEIOS ABSOLUTOS
+  // 8) BLOQUEIOS ABSOLUTOS (RED FLAGS ABSOLUTAS)
   blocks: {
     xgLow: { threshold: 0.40, minute: 55, block: "Over proibido" },
     awayDead: { xg: 0, shots: 0, block: "HA+ visitante proibido" },
@@ -95,7 +100,16 @@ const GODMODE_RULES = {
     noEvents: { minutes: 10, block: "OPC bloqueado" },
     apiIncomplete: "bloquear análise",
     minOdds: 1.60,
-    maxERP: 35
+    maxERP: 35,
+    // RED FLAGS ABSOLUTAS (bloqueiam tudo)
+    absoluteRedFlags: {
+      timeBomb: true,
+      shadowXGHigh: 0.40,
+      roteiroInversao: true,
+      rdsLow: 5,
+      rdsHigh: 50,
+      pressaoExplosao: true
+    }
   },
 
   // 9) HEATMAP TÁTICO
@@ -196,11 +210,16 @@ const GODMODE_RULES = {
   // 24) ANTI-OVERLAP
   antiOverlap: "proibido 2 apostas dependentes do mesmo evento - escolher maior EV+",
 
-  // 25) CONFIDENCE SCORE
+  // 25) CONFIDENCE SCORE (MODO BALANCEADO)
   confidence: {
     HIGH: "liga forte + Momentum forte + pressão real",
     MEDIUM: "EV bom porém instável",
-    LOW: "bloqueios → não sugerir"
+    LOW: "bloqueios → não sugerir",
+    ranges: {
+      noRecommend: [0, 29],
+      conditional: [30, 59],
+      approved: [60, 100]
+    }
   },
 
   // 26) RISK MAP ENGINE
@@ -240,6 +259,131 @@ const GODMODE_RULES = {
       conditions: ["Pressão alta", "Caos", "Time Bomb/Pattern Break/Turning Point"],
       evMin: -4.0,
       description: "EV ≥ -4%. Aviso obrigatório. APENAS HA+."
+    }
+  },
+
+  // ==================== vGODMODE 3.0 - MODO BALANCEADO ====================
+  balancedMode: {
+    enabled: true,
+    philosophy: "Alta precisão + mais entradas + risco controlado",
+    
+    // HA+ MODO BALANCEADO
+    haPlus: {
+      evMinimum: 0, // HA+ só com EV ≥ 0%
+      blockWhen: {
+        timeBombActive: true,
+        shadowXGHigh: 0.40,
+        roteiroInversao: true,
+        rdsOutOfRange: { min: 5, max: 50 },
+        pressaoExplosao: true
+      }
+    },
+
+    // RED FLAGS AMARELAS (não bloqueiam, reduzem confiança)
+    yellowFlags: {
+      momentumFraco: -5,
+      xgBaixo: -3,
+      ataquesPerigososBaixos: -4,
+      gameTempoMedioBaixo: -3,
+      pressaoModerada: -2
+    },
+
+    // GREEN LIGHT - Entrada Imediata
+    greenLight: {
+      conditions: {
+        shadowXG: { max: 0.15 },
+        roteiroConfirmado: true,
+        momentumNeutroOuPositivo: true,
+        timeBombInativa: true,
+        evMinimum: -5,
+        rdsMinimum: 10,
+        tendencia2TPositivaOuNeutra: true
+      },
+      confidenceBonus: 70,
+      message: "GREEN LIGHT – Pode entrar"
+    },
+
+    // DEAD ZONE - Entrada Proibida
+    deadZone: {
+      triggers: [
+        "Red Flag Absoluta",
+        "Shadow xG > 0.60",
+        "2+ chances claras contra cenário",
+        "Explosão crítica de pressão"
+      ],
+      blocks: ["HA+", "OPC", "Score Shield"]
+    },
+
+    // SCORE SHIELD - Time Não Marca
+    scoreShield: {
+      conditions: {
+        xgMax: 0.15,
+        shotsOnTargetMax: 1,
+        rdsMax: 12,
+        momentumNear: 0,
+        shadowXG: 0,
+        tendencia2T: "apagado",
+        noTransitionPattern: true
+      },
+      message: "SCORE SHIELD – Alta probabilidade de time não marcar"
+    },
+
+    // TIMING SCORE
+    timingScore: {
+      ranges: {
+        early: { min: 0, max: 39, action: "quase nunca liberar" },
+        preOptimal: { min: 40, max: 55, action: "só OPC condicional" },
+        premium: { min: 56, max: 68, action: "zona premium" },
+        highValue: { min: 69, max: 79, action: "valor alto com cautela" },
+        late: { min: 80, max: 90, action: "apenas cenários muito claros" }
+      }
+    },
+
+    // LOCK DE 3 MINUTOS (Anti-Explosão)
+    lockMinutes: {
+      duration: 3,
+      triggers: ["Shadow xG alto", "pressão súbita", "quase gol", "penalidade revisada"]
+    },
+
+    // REENTRADA INTELIGENTE
+    reentry: {
+      message: "Reentrada Disponível – Cenário voltou ao roteiro.",
+      conditions: ["entrada foi liberada", "depois bloqueada", "voltou a ter valor"]
+    },
+
+    // TURNING POINT
+    turningPoint: {
+      triggers: [
+        "mudança tática",
+        "sequência de finalizações",
+        "aumento brusco de Shadow xG",
+        "virada repentina de Momentum",
+        "cartão vermelho"
+      ],
+      message: "⚡ TURNING POINT – Reavaliando cenário",
+      action: "Recalcular HA+, OPC, Score Shield e confiança"
+    },
+
+    // MIRROR CHECK - Identificação de Padrões
+    mirrorCheck: {
+      enabled: true,
+      description: "Identifica padrões estatísticos repetidos com base apenas nas variáveis ATUAIS do jogo",
+      archetypes: [
+        "Favorito controlando e underdog apagado (1-0 ou 2-0)",
+        "Jogo morto com xG muito baixo (qualquer placar)",
+        "Underdog agressivo com xG crescente",
+        "Jogo caótico (muitas chances em pouco tempo)",
+        "Jogo travado com tendência defensiva",
+        "Jogo de controle com Shadow xG baixo",
+        "Placar estável + tendência sem mudanças",
+        "Padrão de caminho previsível",
+        "Padrão de risco oculto moderado",
+        "Padrão de risco oculto elevado"
+      ],
+      activationThreshold: 0.70, // 70% match
+      confidenceBonus: { min: 5, max: 15 },
+      message: "MIRROR CHECK: Padrão forte identificado — jogo repetindo script clássico.",
+      dataUsed: ["Shadow xG", "xG", "Momentum", "RDS", "Radar", "Snapshot", "pressão", "ataques perigosos", "tendência"]
     }
   }
 }
@@ -350,6 +494,19 @@ interface LiveEnhancedDataComplete extends LiveEnhancedData {
   turningPointDetected?: boolean
   antiTrapActive?: boolean
   postGoalMode?: boolean
+  // vGODMODE 3.0
+  greenLightActive?: boolean
+  deadZoneActive?: boolean
+  scoreShieldActive?: boolean
+  timingScore?: number
+  lockActive?: boolean
+  lockRemainingMinutes?: number
+  reentryAvailable?: boolean
+  mirrorCheckActive?: boolean
+  mirrorCheckMatch?: number
+  mirrorCheckArchetype?: string
+  opcStatus?: "ATIVO ✓" | "OFF ✗" | "CONDICIONAL ⚠"
+  opcBlockReason?: string
 }
 
 interface AnalysisResult {
@@ -389,6 +546,9 @@ interface HistoryEntry {
 // ==================== STORAGE DE SNAPSHOTS ====================
 
 const firstHalfSnapshot: Record<number, HTSnapshot> = {}
+
+// Estado global para LOCK DE 3 MINUTOS
+let lockState: { active: boolean; until: number } = { active: false, until: 0 }
 
 // ==================== FUNÇÕES AUXILIARES BÁSICAS ====================
 
@@ -1175,7 +1335,189 @@ function determineAggroLevel(
   return 1
 }
 
-// ==================== OPC ANALYZER COM EV ≥ 0 ====================
+// ==================== vGODMODE 3.0 - TIMING SCORE ====================
+
+function calculateTimingScore(minute: number): number {
+  const ranges = GODMODE_RULES.balancedMode.timingScore.ranges
+  
+  if (minute >= ranges.early.min && minute <= ranges.early.max) return 20
+  if (minute >= ranges.preOptimal.min && minute <= ranges.preOptimal.max) return 50
+  if (minute >= ranges.premium.min && minute <= ranges.premium.max) return 90
+  if (minute >= ranges.highValue.min && minute <= ranges.highValue.max) return 75
+  if (minute >= ranges.late.min && minute <= ranges.late.max) return 60
+  
+  return 50
+}
+
+// ==================== vGODMODE 3.0 - GREEN LIGHT ====================
+
+function checkGreenLight(
+  shadowXG: number,
+  htToFtCoherence: "ROTEIRO CONFIRMADO" | "NEUTRO" | "ROTEIRO ROMPIDO",
+  momentumScore: MomentumData,
+  timeBombActive: boolean,
+  ev: number,
+  rds: number,
+  gameTempo: { speed: "alto" | "médio" | "baixo" }
+): boolean {
+  const conditions = GODMODE_RULES.balancedMode.greenLight.conditions
+  
+  return (
+    shadowXG <= conditions.shadowXG.max &&
+    htToFtCoherence === "ROTEIRO CONFIRMADO" &&
+    momentumScore.trend !== "caindo" &&
+    !timeBombActive &&
+    ev >= conditions.evMinimum &&
+    rds >= conditions.rdsMinimum &&
+    (gameTempo.speed === "baixo" || gameTempo.speed === "médio")
+  )
+}
+
+// ==================== vGODMODE 3.0 - DEAD ZONE ====================
+
+function checkDeadZone(
+  redFlagsAbsolutas: boolean,
+  shadowXG: number,
+  chancesContraCenario: number,
+  pressureIndex: number
+): boolean {
+  return (
+    redFlagsAbsolutas ||
+    shadowXG > 0.60 ||
+    chancesContraCenario >= 2 ||
+    pressureIndex > 85
+  )
+}
+
+// ==================== vGODMODE 3.0 - SCORE SHIELD ====================
+
+function checkScoreShield(
+  xg: number,
+  shotsOnTarget: number,
+  rds: number,
+  momentumScore: MomentumData,
+  shadowXG: number
+): boolean {
+  const conditions = GODMODE_RULES.balancedMode.scoreShield.conditions
+  
+  return (
+    xg <= conditions.xgMax &&
+    shotsOnTarget <= conditions.shotsOnTargetMax &&
+    rds <= conditions.rdsMax &&
+    momentumScore.last5min < 20 &&
+    shadowXG === 0
+  )
+}
+
+// ==================== vGODMODE 3.0 - MIRROR CHECK ====================
+
+function checkMirrorPattern(
+  htSnapshot: HTSnapshot | undefined,
+  currentRdsCasa: number,
+  currentRdsFora: number,
+  xgHome: number,
+  xgAway: number,
+  shadowXG: number,
+  momentumScore: MomentumData,
+  pressureIndex: PressureData,
+  riskMapType: "explosive" | "controlled" | "chaotic" | "locked" | "dead",
+  score: string
+): { active: boolean; match: number; archetype: string } {
+  const archetypes = GODMODE_RULES.balancedMode.mirrorCheck.archetypes
+  let bestMatch = 0
+  let bestArchetype = ""
+  
+  const [homeScore, awayScore] = score.split("-").map(Number)
+  const scoreDiff = homeScore - awayScore
+  
+  // Arquétipo 1: Favorito controlando e underdog apagado (1-0 ou 2-0)
+  if ((scoreDiff === 1 || scoreDiff === 2) && currentRdsFora < 40 && currentRdsCasa > 60) {
+    const match = 0.85
+    if (match > bestMatch) {
+      bestMatch = match
+      bestArchetype = archetypes[0]
+    }
+  }
+  
+  // Arquétipo 2: Jogo morto com xG muito baixo
+  if (xgHome + xgAway < 0.6 && riskMapType === "dead") {
+    const match = 0.90
+    if (match > bestMatch) {
+      bestMatch = match
+      bestArchetype = archetypes[1]
+    }
+  }
+  
+  // Arquétipo 3: Underdog agressivo com xG crescente
+  if (currentRdsFora > 65 && xgAway > xgHome && momentumScore.trend === "crescendo") {
+    const match = 0.80
+    if (match > bestMatch) {
+      bestMatch = match
+      bestArchetype = archetypes[2]
+    }
+  }
+  
+  // Arquétipo 4: Jogo caótico
+  if (riskMapType === "chaotic" && pressureIndex.pressureIndex > 70) {
+    const match = 0.75
+    if (match > bestMatch) {
+      bestMatch = match
+      bestArchetype = archetypes[3]
+    }
+  }
+  
+  // Arquétipo 5: Jogo travado com tendência defensiva
+  if (riskMapType === "locked" && xgHome + xgAway < 1.0) {
+    const match = 0.78
+    if (match > bestMatch) {
+      bestMatch = match
+      bestArchetype = archetypes[4]
+    }
+  }
+  
+  // Arquétipo 6: Jogo de controle com Shadow xG baixo
+  if (riskMapType === "controlled" && shadowXG < 0.15) {
+    const match = 0.82
+    if (match > bestMatch) {
+      bestMatch = match
+      bestArchetype = archetypes[5]
+    }
+  }
+  
+  // Arquétipo 7: Placar estável + tendência sem mudanças
+  if (htSnapshot && Math.abs(scoreDiff) <= 1 && momentumScore.trend === "neutro") {
+    const match = 0.72
+    if (match > bestMatch) {
+      bestMatch = match
+      bestArchetype = archetypes[6]
+    }
+  }
+  
+  const active = bestMatch >= GODMODE_RULES.balancedMode.mirrorCheck.activationThreshold
+  
+  return { active, match: bestMatch, archetype: bestArchetype }
+}
+
+// ==================== vGODMODE 3.0 - LOCK DE 3 MINUTOS ====================
+
+function checkLock(currentMinute: number): { active: boolean; remaining: number } {
+  const now = Date.now()
+  
+  if (lockState.active && now < lockState.until) {
+    const remaining = Math.ceil((lockState.until - now) / 60000)
+    return { active: true, remaining }
+  }
+  
+  lockState.active = false
+  return { active: false, remaining: 0 }
+}
+
+function activateLock(currentMinute: number) {
+  lockState.active = true
+  lockState.until = Date.now() + (3 * 60 * 1000) // 3 minutos
+}
+
+// ==================== OPC ANALYZER COM MODO BALANCEADO ====================
 
 function analyzeOPC(
   haHasEV: boolean,
@@ -1185,17 +1527,45 @@ function analyzeOPC(
   pressureIndex: PressureData,
   shadowXG: number,
   timeBombActive: boolean,
-  ev: number
-): string {
+  ev: number,
+  htToFtCoherence: "ROTEIRO CONFIRMADO" | "NEUTRO" | "ROTEIRO ROMPIDO",
+  rds: number,
+  gameTempo: { speed: "alto" | "médio" | "baixo" },
+  deadZoneActive: boolean
+): { status: "ATIVO ✓" | "OFF ✗" | "CONDICIONAL ⚠"; message: string; reason?: string } {
   if (haHasEV) {
-    return "HA+ tem EV+ - OPC não necessária"
+    return { status: "OFF ✗", message: "HA+ tem EV+ - OPC não necessária" }
   }
   
-  // OPC só pode ser recomendado com EV ≥ 0
-  if (ev < 0) {
-    return "❌ OPC bloqueado - EV negativo não permitido para OPC"
+  // Bloqueios OPC
+  if (deadZoneActive) {
+    return { status: "OFF ✗", message: "❌ OPC bloqueado - DEAD ZONE ativa", reason: "DEAD ZONE" }
   }
   
+  // MODO BALANCEADO: OPC liberado com EV ≥ -10% OU 4 de 5 módulos positivos
+  const balancedConfig = GODMODE_RULES.opc.balancedMode
+  
+  // Verificar módulos
+  let modulesPositive = 0
+  
+  if (htToFtCoherence === "ROTEIRO CONFIRMADO") modulesPositive++
+  if (momentumScore.trend !== "caindo") modulesPositive++
+  if (shadowXG <= 0.15) modulesPositive++
+  if (rds >= 10) modulesPositive++
+  if (gameTempo.speed !== "alto") modulesPositive++
+  
+  const evOk = ev >= balancedConfig.evThreshold
+  const modulesOk = modulesPositive >= balancedConfig.modulesRequired
+  
+  if (!evOk && !modulesOk) {
+    return { 
+      status: "OFF ✗", 
+      message: `❌ OPC bloqueado - EV (${ev.toFixed(2)}%) < -10% E apenas ${modulesPositive}/5 módulos positivos`,
+      reason: `EV baixo + módulos insuficientes`
+    }
+  }
+  
+  // OPC pode ser liberado
   let opcSignals = 0
   const opcReasons: string[] = []
   
@@ -1230,13 +1600,21 @@ function analyzeOPC(
   }
   
   if (opcSignals >= 3) {
-    return `✅ OPC VÁLIDA (EV: ${ev.toFixed(2)}%): ${opcReasons.slice(0, 3).join(" • ")}`
+    const statusLabel = evOk ? "ATIVO ✓" : "CONDICIONAL ⚠"
+    return { 
+      status: statusLabel, 
+      message: `${statusLabel === "ATIVO ✓" ? "✅" : "⚠️"} OPC VÁLIDA (EV: ${ev.toFixed(2)}%): ${opcReasons.slice(0, 3).join(" • ")}`
+    }
   }
   
-  return "❌ Nenhuma OPC válida (menos de 3 sinais EV+)"
+  return { 
+    status: "OFF ✗", 
+    message: "❌ Nenhuma OPC válida (menos de 3 sinais)",
+    reason: "Sinais insuficientes"
+  }
 }
 
-// ==================== ANÁLISE LIVE COMPLETA COM GODMODE + AUTO-TUNING ====================
+// ==================== ANÁLISE LIVE COMPLETA COM GODMODE + AUTO-TUNING + vGODMODE 3.0 ====================
 
 function performLiveAnalysisComplete(
   teamName: string,
@@ -1488,6 +1866,88 @@ function performLiveAnalysisComplete(
   
   const aggroConfig = GODMODE_RULES.aggroLevels[aggroLevel as 0 | 1 | 2 | 3]
 
+  // ==================== vGODMODE 3.0 - MODO BALANCEADO ====================
+  
+  // Timing Score
+  const timingScore = calculateTimingScore(currentMinute)
+  confidence += (timingScore - 50) * 0.1
+  
+  // Green Light
+  const greenLightActive = checkGreenLight(
+    shadowXG,
+    htToFtCoherence,
+    momentumScore,
+    timeBombActive,
+    ev,
+    currentRdsFora,
+    gameTempo
+  )
+  
+  if (greenLightActive) {
+    confidence = Math.max(confidence, GODMODE_RULES.balancedMode.greenLight.confidenceBonus)
+  }
+  
+  // Red Flags Absolutas
+  const redFlagsAbsolutas = 
+    timeBombActive ||
+    shadowXG > GODMODE_RULES.blocks.absoluteRedFlags.shadowXGHigh ||
+    htToFtCoherence === "ROTEIRO ROMPIDO" ||
+    currentRdsFora < GODMODE_RULES.blocks.absoluteRedFlags.rdsLow ||
+    currentRdsFora > GODMODE_RULES.blocks.absoluteRedFlags.rdsHigh ||
+    pressureIndex.pressureIndex > 85
+  
+  // Dead Zone
+  const deadZoneActive = checkDeadZone(
+    redFlagsAbsolutas,
+    shadowXG,
+    0, // Chances contra cenário (mock)
+    pressureIndex.pressureIndex
+  )
+  
+  // Score Shield
+  const scoreShieldActive = checkScoreShield(
+    htStats.xgAway || 0,
+    htStats.shotsOnTargetAway,
+    currentRdsFora,
+    momentumScore,
+    shadowXG
+  )
+  
+  // Lock de 3 minutos
+  const lockCheck = checkLock(currentMinute)
+  
+  // Verificar se deve ativar lock
+  if (shadowXG > 0.5 || pressureIndex.pressureIndex > 80) {
+    activateLock(currentMinute)
+  }
+  
+  // Mirror Check
+  const mirrorCheck = checkMirrorPattern(
+    htSnapshot,
+    currentRdsCasa,
+    currentRdsFora,
+    htStats.xgHome || 0,
+    htStats.xgAway || 0,
+    shadowXG,
+    momentumScore,
+    pressureIndex,
+    riskMapType,
+    htStats.halftimeScore
+  )
+  
+  if (mirrorCheck.active) {
+    const bonus = Math.round(5 + (mirrorCheck.match - 0.70) * 50) // 5-15 bonus
+    confidence += bonus
+  }
+  
+  // Red Flags Amarelas
+  const yellowFlags = GODMODE_RULES.balancedMode.yellowFlags
+  if (momentumScore.last5min < 40) confidence += yellowFlags.momentumFraco
+  if ((htStats.xgAway || 0) < 0.5) confidence += yellowFlags.xgBaixo
+  if (htStats.dangerousAttacksAway < 20) confidence += yellowFlags.ataquesPerigososBaixos
+  if (gameTempo.speed === "baixo") confidence += yellowFlags.gameTempoMedioBaixo
+  if (pressureIndex.pressureIndex < 50) confidence += yellowFlags.pressaoModerada
+
   // ==================== BLOQUEIOS ABSOLUTOS (GODMODE RULE 8) ====================
   
   const extremePressure = pressureIndex.pressureIndex > 75 && htStats.xgHome !== undefined && htStats.xgHome > 2.5
@@ -1523,30 +1983,51 @@ function performLiveAnalysisComplete(
     redFlags.push("🚫 RISK MAP = DEAD")
   }
   
-  if (redFlags.length > 0) {
+  // Bloqueio por Dead Zone
+  if (deadZoneActive) {
+    redFlags.push("🚫 DEAD ZONE ATIVA - ENTRADA PROIBIDA")
+  }
+  
+  // Bloqueio por Lock
+  if (lockCheck.active) {
+    redFlags.push(`🚫 LOCK ATIVO - ${lockCheck.remaining} minutos restantes`)
+  }
+  
+  if (redFlags.length > 0 || deadZoneActive || lockCheck.active) {
     confidence = 0 // Bloqueio total
   }
 
   // Garantir confiança entre 0-100
   confidence = Math.max(0, Math.min(100, confidence))
 
-  // ==================== DECISÃO FINAL COM GODMODE + AUTO-TUNING ====================
+  // ==================== DECISÃO FINAL COM GODMODE + AUTO-TUNING + vGODMODE 3.0 ====================
   
   let handicap = "NÃO APOSTAR"
   let recommendation = "SEM RECOMENDAÇÃO – NÃO APOSTAR"
   const justification: string[] = []
   let evNegativeWarning = ""
 
-  if (redFlags.length > 0) {
+  if (redFlags.length > 0 || deadZoneActive || lockCheck.active) {
     justification.push("🚫 BLOQUEIO ATIVADO POR RED FLAGS CRÍTICAS:")
     redFlags.forEach(flag => justification.push(`   ${flag}`))
   } else {
-    // Aplicar lógica de AggroLevel
+    // Aplicar lógica de AggroLevel + vGODMODE 3.0
     const evThreshold = aggroConfig.evMin
     
-    if (ev >= evThreshold) {
-      // Confirmação Tripla obrigatória para Nível 3
-      if (aggroLevel === 3) {
+    // HA+ MODO BALANCEADO: só com EV ≥ 0%
+    const haPlusAllowed = ev >= GODMODE_RULES.balancedMode.haPlus.evMinimum
+    
+    if (!haPlusAllowed) {
+      justification.push(`⚠️ HA+ bloqueado - EV (${ev.toFixed(2)}%) < 0% (Modo Balanceado)`)
+    } else if (ev >= evThreshold) {
+      // Green Light override
+      if (greenLightActive) {
+        handicap = haLine
+        recommendation = `✅ APOSTAR: ${teamName} ${haLine}`
+        justification.push(`🟢 GREEN LIGHT ATIVO - Entrada imediata aprovada`)
+        justification.push(`✅ Modo Balanceado (Nível ${aggroLevel})`)
+      } else if (aggroLevel === 3) {
+        // Confirmação Tripla obrigatória para Nível 3
         const tripleConfirmation = 
           (momentumScore.last5min >= 45) &&
           (pressureIndex.pressureIndex >= 60) &&
@@ -1605,9 +2086,9 @@ function performLiveAnalysisComplete(
     }
   }
 
-  // OPC Analysis (com EV ≥ 0)
+  // OPC Analysis (MODO BALANCEADO)
   const haHasEV = ev > 2 && confidence >= 60
-  const opcRecommendation = analyzeOPC(
+  const opcResult = analyzeOPC(
     haHasEV,
     htStats,
     currentMinute,
@@ -1615,7 +2096,11 @@ function performLiveAnalysisComplete(
     pressureIndex,
     shadowXG,
     timeBombActive,
-    ev
+    ev,
+    htToFtCoherence,
+    currentRdsFora,
+    gameTempo,
+    deadZoneActive
   )
 
   justification.push(`\n📊 Métricas Principais:`)
@@ -1624,12 +2109,13 @@ function performLiveAnalysisComplete(
   justification.push(`   EV: ${ev.toFixed(2)}%`)
   justification.push(`   RDS Casa: ${currentRdsCasa.toFixed(1)} | RDS Fora: ${currentRdsFora.toFixed(1)}`)
   justification.push(`   AggroLevel: ${aggroLevel} (${aggroConfig.name})`)
+  justification.push(`   Timing Score: ${timingScore}/100`)
   
   if (htToFtCoherence !== "NEUTRO") {
     justification.push(`\n🔄 Comparação HT→FT: ${htToFtCoherence}`)
   }
   
-  justification.push(`\n⚡ Módulos GODMODE Ativos:`)
+  justification.push(`\n⚡ Módulos GODMODE + vGODMODE 3.0 Ativos:`)
   justification.push(`   Momentum: ${momentumScore.trend.toUpperCase()} (${momentumScore.last5min.toFixed(0)}/100)`)
   justification.push(`   Pressure Index: ${pressureIndex.pressureIndex.toFixed(0)}/100 ${pressureIndex.isHotMoment ? '🔥' : ''}`)
   justification.push(`   HA Friendly: ${haFriendly ? 'SIM ✅' : 'NÃO ❌'}`)
@@ -1642,12 +2128,30 @@ function performLiveAnalysisComplete(
   justification.push(`   Dead Game: ${deadGameDetected ? 'DETECTADO ⚠️' : 'Não'}`)
   justification.push(`   Risk Map: ${riskMapType.toUpperCase()}`)
   
-  justification.push(`\n🎯 OPC (Oportunidade Secundária):`)
-  justification.push(`   ${opcRecommendation}`)
+  // vGODMODE 3.0
+  justification.push(`\n🆕 vGODMODE 3.0 - Modo Balanceado:`)
+  justification.push(`   Green Light: ${greenLightActive ? '🟢 ATIVO' : '⚪ Inativo'}`)
+  justification.push(`   Dead Zone: ${deadZoneActive ? '🔴 ATIVA' : '⚪ Inativa'}`)
+  justification.push(`   Score Shield: ${scoreShieldActive ? '🛡️ ATIVO' : '⚪ Inativo'}`)
+  justification.push(`   Lock 3min: ${lockCheck.active ? `🔒 ATIVO (${lockCheck.remaining}min)` : '⚪ Inativo'}`)
+  justification.push(`   Mirror Check: ${mirrorCheck.active ? `✅ ATIVO (${(mirrorCheck.match * 100).toFixed(0)}%)` : '⚪ Inativo'}`)
+  if (mirrorCheck.active) {
+    justification.push(`      Arquétipo: ${mirrorCheck.archetype}`)
+  }
+  
+  justification.push(`\n🎯 OPC (Oportunidade Secundária) - Modo Balanceado:`)
+  justification.push(`   Status: ${opcResult.status}`)
+  justification.push(`   ${opcResult.message}`)
 
   // Next Step Prediction
   let nextStep = ""
-  if (momentumScore.trend === "crescendo" && timeBombActive) {
+  if (greenLightActive) {
+    nextStep = "🟢 GREEN LIGHT - Entrada imediata recomendada"
+  } else if (deadZoneActive) {
+    nextStep = "🔴 DEAD ZONE - Aguardar melhoria do cenário"
+  } else if (scoreShieldActive) {
+    nextStep = "🛡️ SCORE SHIELD - Time adversário com baixa probabilidade de marcar"
+  } else if (momentumScore.trend === "crescendo" && timeBombActive) {
     nextStep = "🚀 Expectativa: Gol iminente nos próximos 5-10 minutos"
   } else if (deadGameDetected) {
     nextStep = "⏸️ Expectativa: Jogo travado - poucos eventos esperados"
@@ -1683,7 +2187,20 @@ function performLiveAnalysisComplete(
     aggroLevel,
     turningPointDetected: patternBreak === "forte",
     antiTrapActive: false,
-    postGoalMode: false
+    postGoalMode: false,
+    // vGODMODE 3.0
+    greenLightActive,
+    deadZoneActive,
+    scoreShieldActive,
+    timingScore,
+    lockActive: lockCheck.active,
+    lockRemainingMinutes: lockCheck.remaining,
+    reentryAvailable: false, // Implementar lógica de reentrada
+    mirrorCheckActive: mirrorCheck.active,
+    mirrorCheckMatch: mirrorCheck.match,
+    mirrorCheckArchetype: mirrorCheck.archetype,
+    opcStatus: opcResult.status,
+    opcBlockReason: opcResult.reason
   }
 
   return {
@@ -1701,7 +2218,7 @@ function performLiveAnalysisComplete(
     probabilityCoverage: realProb,
     enhancedData,
     htSnapshot,
-    opcRecommendation,
+    opcRecommendation: opcResult.message,
     nextStep,
     aggroLevel,
     aggroLevelName: aggroConfig.name,
@@ -2074,7 +2591,7 @@ export default function Home() {
 
       toast({
         title: "Análise do 2º tempo concluída",
-        description: "GODMODE ativado - 26 regras + Auto-Tuning aplicados!",
+        description: "vGODMODE 3.0 ativado - Modo Balanceado completo!",
       })
     }, 1500)
   }
@@ -2110,10 +2627,10 @@ export default function Home() {
         <div className="flex items-center justify-between mb-8">
           <div className="text-center flex-1">
             <h1 className="text-4xl md:text-5xl font-bold mb-2 bg-gradient-to-r from-emerald-400 to-cyan-400 bg-clip-text text-transparent">
-              Filtro Campeão vGODMODE 4.0 ULTRA MASTER
+              Filtro Campeão vGODMODE 3.0 BALANCEADO
             </h1>
             <p className={`text-sm md:text-base ${textSecondaryClass}`}>
-              26 Regras GODMODE • Auto-Tuning (0-3) • HA+ Prioridade • OPC EV≥0 • Shadow xG • Time Bomb • Risk Map • Dead Game • Zero emoção
+              Modo Balanceado • HA+ EV≥0 • OPC EV≥-10% • Green Light • Dead Zone • Score Shield • Mirror Check • Timing Score • Lock 3min • Turning Point • Reentrada Inteligente
             </p>
           </div>
           
@@ -2151,7 +2668,7 @@ export default function Home() {
             <p className={`text-sm ${textSecondaryClass}`}>
               {mode === "LAB" 
                 ? "Modo flexível para testar cenários. Sem travas rígidas."
-                : "Modo profissional com GODMODE completo: 26 regras ativas, Auto-Tuning (0-3), bloqueios absolutos e Red Flags."}
+                : "Modo profissional com vGODMODE 3.0 Balanceado: mais entradas + risco controlado + 15 novos módulos."}
             </p>
 
             {mode === "REAL" && (
@@ -2345,9 +2862,9 @@ export default function Home() {
             <CardHeader>
               <CardTitle className={`flex items-center gap-2 ${textClass}`}>
                 <Activity className="w-5 h-5 text-cyan-400" />
-                Análise HT → FT (Live) - GODMODE
+                Análise HT → FT (Live) - vGODMODE 3.0
               </CardTitle>
-              <CardDescription className={textSecondaryClass}>Análise do 2º tempo com 26 regras GODMODE + Auto-Tuning ativas</CardDescription>
+              <CardDescription className={textSecondaryClass}>Análise do 2º tempo com Modo Balanceado completo</CardDescription>
             </CardHeader>
             <CardContent className="space-y-4">
               <div>
@@ -2472,7 +2989,7 @@ export default function Home() {
                 disabled={htLoading || !htData || isAnalyzing2ndHalf}
                 className="w-full bg-orange-600 hover:bg-orange-700 text-white"
               >
-                {isAnalyzing2ndHalf ? "Analisando 2º Tempo..." : "🚀 Analisar 2º Tempo (19 Módulos)"}
+                {isAnalyzing2ndHalf ? "Analisando 2º Tempo..." : "🚀 Analisar 2º Tempo (vGODMODE 3.0)"}
               </Button>
             </CardContent>
           </Card>
@@ -2591,13 +3108,13 @@ export default function Home() {
           </Card>
         )}
 
-        {/* Resultado HT→FT com GODMODE + AUTO-TUNING */}
-        {htAnalysis && (
+        {/* Resultado HT→FT com vGODMODE 3.0 */}
+        {htAnalysis && htAnalysis.enhancedData && (
           <Card className={`mb-6 ${cardClass}`}>
             <CardHeader>
               <CardTitle className={`flex items-center gap-2 ${textClass}`}>
                 <Brain className="w-5 h-5 text-cyan-400" />
-                Resultado da Análise HT → FT (GODMODE 4.0 ULTRA MASTER)
+                Resultado da Análise HT → FT (vGODMODE 3.0 BALANCEADO)
               </CardTitle>
             </CardHeader>
             <CardContent className="space-y-4">
@@ -2657,189 +3174,57 @@ export default function Home() {
                 </div>
               </div>
 
+              {/* vGODMODE 3.0 Indicators */}
+              <div className="grid md:grid-cols-3 gap-4">
+                <div className={`${isDark ? "bg-slate-800" : "bg-slate-100"} p-4 rounded-lg`}>
+                  <p className={`text-xs ${textSecondaryClass} mb-1`}>Green Light</p>
+                  <Badge variant={htAnalysis.enhancedData.greenLightActive ? "default" : "secondary"}>
+                    {htAnalysis.enhancedData.greenLightActive ? "🟢 ATIVO" : "⚪ Inativo"}
+                  </Badge>
+                </div>
+                <div className={`${isDark ? "bg-slate-800" : "bg-slate-100"} p-4 rounded-lg`}>
+                  <p className={`text-xs ${textSecondaryClass} mb-1`}>Dead Zone</p>
+                  <Badge variant={htAnalysis.enhancedData.deadZoneActive ? "destructive" : "secondary"}>
+                    {htAnalysis.enhancedData.deadZoneActive ? "🔴 ATIVA" : "⚪ Inativa"}
+                  </Badge>
+                </div>
+                <div className={`${isDark ? "bg-slate-800" : "bg-slate-100"} p-4 rounded-lg`}>
+                  <p className={`text-xs ${textSecondaryClass} mb-1`}>Score Shield</p>
+                  <Badge variant={htAnalysis.enhancedData.scoreShieldActive ? "default" : "secondary"}>
+                    {htAnalysis.enhancedData.scoreShieldActive ? "🛡️ ATIVO" : "⚪ Inativo"}
+                  </Badge>
+                </div>
+              </div>
+
+              {/* Mirror Check */}
+              {htAnalysis.enhancedData.mirrorCheckActive && (
+                <div className={`${isDark ? "bg-purple-500/10 border-purple-500/30" : "bg-purple-100 border-purple-300"} border rounded-lg p-4`}>
+                  <p className={`font-semibold ${textClass} mb-2 flex items-center gap-2`}>
+                    <Eye className="w-5 h-5 text-purple-400" />
+                    Mirror Check Ativo
+                  </p>
+                  <p className={`text-sm ${textClass} mb-1`}>Match: {(htAnalysis.enhancedData.mirrorCheckMatch! * 100).toFixed(0)}%</p>
+                  <p className={`text-sm ${textSecondaryClass}`}>{htAnalysis.enhancedData.mirrorCheckArchetype}</p>
+                </div>
+              )}
+
+              {/* OPC Status */}
+              <div className={`${isDark ? "bg-cyan-500/10 border-cyan-500/30" : "bg-cyan-100 border-cyan-300"} border rounded-lg p-4`}>
+                <p className={`font-semibold ${textClass} mb-2`}>🎲 OPC (Modo Balanceado):</p>
+                <Badge variant={
+                  htAnalysis.enhancedData.opcStatus === "ATIVO ✓" ? "default" :
+                  htAnalysis.enhancedData.opcStatus === "CONDICIONAL ⚠" ? "outline" : "secondary"
+                } className="mb-2">
+                  {htAnalysis.enhancedData.opcStatus}
+                </Badge>
+                <p className={`text-sm ${textClass}`}>{htAnalysis.opcRecommendation}</p>
+              </div>
+
               {/* Next Step */}
               {htAnalysis.nextStep && (
-                <div className={`${isDark ? "bg-cyan-500/10 border-cyan-500/30" : "bg-cyan-100 border-cyan-300"} border rounded-lg p-4`}>
+                <div className={`${isDark ? "bg-orange-500/10 border-orange-500/30" : "bg-orange-100 border-orange-300"} border rounded-lg p-4`}>
                   <p className={`font-semibold ${textClass} mb-2`}>🎯 Próximo Passo Previsto:</p>
                   <p className={textClass}>{htAnalysis.nextStep}</p>
-                </div>
-              )}
-
-              {/* OPC */}
-              {htAnalysis.opcRecommendation && (
-                <div className={`${isDark ? "bg-purple-500/10 border-purple-500/30" : "bg-purple-100 border-purple-300"} border rounded-lg p-4`}>
-                  <p className={`font-semibold ${textClass} mb-2`}>🎲 OPC (Oportunidade Secundária):</p>
-                  <p className={textClass}>{htAnalysis.opcRecommendation}</p>
-                </div>
-              )}
-
-              {/* Módulos GODMODE Visuais */}
-              {htAnalysis.enhancedData && (
-                <div className="space-y-4">
-                  <Separator className={isDark ? "bg-slate-700" : "bg-slate-300"} />
-                  
-                  <h4 className={`font-semibold ${textClass} flex items-center gap-2`}>
-                    <Gauge className="w-5 h-5 text-cyan-400" />
-                    Módulos GODMODE Ativos
-                  </h4>
-
-                  {/* Momentum Score */}
-                  <div className={`${isDark ? "bg-slate-800" : "bg-slate-100"} p-4 rounded-lg`}>
-                    <div className="flex items-center justify-between mb-2">
-                      <span className={`text-sm font-semibold ${textClass}`}>⚡ Momentum Score</span>
-                      <Badge variant={
-                        htAnalysis.enhancedData.momentumScore.trend === "crescendo" ? "default" :
-                        htAnalysis.enhancedData.momentumScore.trend === "caindo" ? "destructive" : "outline"
-                      }>
-                        {htAnalysis.enhancedData.momentumScore.trend.toUpperCase()}
-                      </Badge>
-                    </div>
-                    <div className="grid grid-cols-3 gap-2 text-xs">
-                      <div>
-                        <p className={textSecondaryClass}>5 min</p>
-                        <Progress value={htAnalysis.enhancedData.momentumScore.last5min} className="mt-1" />
-                        <p className={`${textClass} mt-1`}>{htAnalysis.enhancedData.momentumScore.last5min.toFixed(0)}</p>
-                      </div>
-                      <div>
-                        <p className={textSecondaryClass}>10 min</p>
-                        <Progress value={htAnalysis.enhancedData.momentumScore.last10min} className="mt-1" />
-                        <p className={`${textClass} mt-1`}>{htAnalysis.enhancedData.momentumScore.last10min.toFixed(0)}</p>
-                      </div>
-                      <div>
-                        <p className={textSecondaryClass}>15 min</p>
-                        <Progress value={htAnalysis.enhancedData.momentumScore.last15min} className="mt-1" />
-                        <p className={`${textClass} mt-1`}>{htAnalysis.enhancedData.momentumScore.last15min.toFixed(0)}</p>
-                      </div>
-                    </div>
-                  </div>
-
-                  {/* Pressure Index */}
-                  <div className={`${isDark ? "bg-slate-800" : "bg-slate-100"} p-4 rounded-lg`}>
-                    <div className="flex items-center justify-between mb-2">
-                      <span className={`text-sm font-semibold ${textClass}`}>🔥 Pressure Index</span>
-                      {htAnalysis.enhancedData.pressureIndex.isHotMoment && (
-                        <Badge variant="destructive">MOMENTO QUENTE</Badge>
-                      )}
-                    </div>
-                    <Progress value={htAnalysis.enhancedData.pressureIndex.pressureIndex} className="mb-2" />
-                    <p className={`text-xs ${textClass}`}>{htAnalysis.enhancedData.pressureIndex.pressureIndex.toFixed(0)}/100</p>
-                    {htAnalysis.enhancedData.pressureIndex.occasions.length > 0 && (
-                      <div className="mt-2 space-y-1">
-                        {htAnalysis.enhancedData.pressureIndex.occasions.map((occ, idx) => (
-                          <p key={idx} className={`text-xs ${textSecondaryClass}`}>• {occ}</p>
-                        ))}
-                      </div>
-                    )}
-                  </div>
-
-                  {/* GODMODE Indicators */}
-                  <div className="grid md:grid-cols-4 gap-4">
-                    <div className={`${isDark ? "bg-slate-800" : "bg-slate-100"} p-3 rounded-lg`}>
-                      <p className={`text-xs ${textSecondaryClass}`}>Shadow xG</p>
-                      <p className={`text-xl font-bold ${textClass}`}>{htAnalysis.enhancedData.shadowXG?.toFixed(2) || "0.00"}</p>
-                    </div>
-                    <div className={`${isDark ? "bg-slate-800" : "bg-slate-100"} p-3 rounded-lg`}>
-                      <p className={`text-xs ${textSecondaryClass}`}>Time Bomb</p>
-                      <Badge variant={htAnalysis.enhancedData.timeBombActive ? "destructive" : "secondary"}>
-                        {htAnalysis.enhancedData.timeBombActive ? "ATIVADA 💣" : "Inativa"}
-                      </Badge>
-                    </div>
-                    <div className={`${isDark ? "bg-slate-800" : "bg-slate-100"} p-3 rounded-lg`}>
-                      <p className={`text-xs ${textSecondaryClass}`}>Dead Game</p>
-                      <Badge variant={htAnalysis.enhancedData.deadGameDetected ? "destructive" : "secondary"}>
-                        {htAnalysis.enhancedData.deadGameDetected ? "DETECTADO ⚠️" : "Não"}
-                      </Badge>
-                    </div>
-                    <div className={`${isDark ? "bg-slate-800" : "bg-slate-100"} p-3 rounded-lg`}>
-                      <p className={`text-xs ${textSecondaryClass}`}>Risk Map</p>
-                      <Badge variant="default">
-                        {htAnalysis.enhancedData.riskMapType?.toUpperCase() || "N/A"}
-                      </Badge>
-                    </div>
-                  </div>
-
-                  {/* TDA, GameTempo, ERP */}
-                  <div className="grid md:grid-cols-3 gap-4">
-                    <div className={`${isDark ? "bg-slate-800" : "bg-slate-100"} p-4 rounded-lg`}>
-                      <p className={`text-xs ${textSecondaryClass} mb-1`}>📈 TDA Score</p>
-                      <p className={`text-xl font-bold ${textClass}`}>{htAnalysis.enhancedData.tda.score}/100</p>
-                      <Badge variant={htAnalysis.enhancedData.tda.trend === "consistente" ? "default" : "destructive"} className="mt-2">
-                        {htAnalysis.enhancedData.tda.trend.toUpperCase()}
-                      </Badge>
-                      <p className={`text-xs ${textSecondaryClass} mt-2`}>{htAnalysis.enhancedData.tda.description}</p>
-                    </div>
-
-                    <div className={`${isDark ? "bg-slate-800" : "bg-slate-100"} p-4 rounded-lg`}>
-                      <p className={`text-xs ${textSecondaryClass} mb-1`}>⏱️ Game Tempo</p>
-                      <p className={`text-xl font-bold ${textClass}`}>{htAnalysis.enhancedData.gameTempo.speed.toUpperCase()}</p>
-                      <Progress value={htAnalysis.enhancedData.gameTempo.volatilityRisk} className="mt-2" />
-                      <p className={`text-xs ${textSecondaryClass} mt-2`}>Risco: {htAnalysis.enhancedData.gameTempo.volatilityRisk}%</p>
-                    </div>
-
-                    <div className={`${isDark ? "bg-slate-800" : "bg-slate-100"} p-4 rounded-lg`}>
-                      <p className={`text-xs ${textSecondaryClass} mb-1`}>🔄 ERP</p>
-                      <p className={`text-xl font-bold ${textClass}`}>{htAnalysis.enhancedData.erp.reversalProbability.toFixed(0)}%</p>
-                      <Badge variant={
-                        htAnalysis.enhancedData.erp.impact === "alto" ? "default" :
-                        htAnalysis.enhancedData.erp.impact === "médio" ? "outline" : "secondary"
-                      } className="mt-2">
-                        {htAnalysis.enhancedData.erp.impact.toUpperCase()}
-                      </Badge>
-                    </div>
-                  </div>
-
-                  {/* Outros Indicadores */}
-                  <div className="grid md:grid-cols-2 gap-4">
-                    <div className={`${isDark ? "bg-slate-800" : "bg-slate-100"} p-3 rounded-lg`}>
-                      <p className={`text-xs ${textSecondaryClass}`}>Minute Phase</p>
-                      <p className={`font-bold ${textClass}`}>{htAnalysis.enhancedData.minutePhase}</p>
-                    </div>
-                    <div className={`${isDark ? "bg-slate-800" : "bg-slate-100"} p-3 rounded-lg`}>
-                      <p className={`text-xs ${textSecondaryClass}`}>HA Friendly</p>
-                      <p className={`font-bold ${textClass}`}>{htAnalysis.enhancedData.haFriendly ? "SIM ✅" : "NÃO ❌"}</p>
-                    </div>
-                    <div className={`${isDark ? "bg-slate-800" : "bg-slate-100"} p-3 rounded-lg`}>
-                      <p className={`text-xs ${textSecondaryClass}`}>Coherence HA</p>
-                      <Progress value={htAnalysis.enhancedData.coherenceScoreHA} className="mt-1" />
-                      <p className={`text-xs ${textClass} mt-1`}>{htAnalysis.enhancedData.coherenceScoreHA.toFixed(0)}/100</p>
-                    </div>
-                    <div className={`${isDark ? "bg-slate-800" : "bg-slate-100"} p-3 rounded-lg`}>
-                      <p className={`text-xs ${textSecondaryClass}`}>Pattern Break</p>
-                      <Badge variant={
-                        htAnalysis.enhancedData.patternBreak === "forte" ? "destructive" :
-                        htAnalysis.enhancedData.patternBreak === "leve" ? "outline" : "secondary"
-                      }>
-                        {htAnalysis.enhancedData.patternBreak.toUpperCase()}
-                      </Badge>
-                    </div>
-                  </div>
-
-                  {/* HT→FT Coherence */}
-                  {htAnalysis.enhancedData.htToFtCoherence && (
-                    <div className={`p-4 rounded-lg border-2 ${
-                      htAnalysis.enhancedData.htToFtCoherence === "ROTEIRO CONFIRMADO" 
-                        ? "bg-emerald-500/10 border-emerald-500/50"
-                        : htAnalysis.enhancedData.htToFtCoherence === "ROTEIRO ROMPIDO"
-                        ? "bg-red-500/10 border-red-500/50"
-                        : "bg-yellow-500/10 border-yellow-500/50"
-                    }`}>
-                      <p className={`font-semibold ${textClass} mb-1`}>🔄 Comparação HT → FT</p>
-                      <p className={`text-lg font-bold ${textClass}`}>{htAnalysis.enhancedData.htToFtCoherence}</p>
-                    </div>
-                  )}
-
-                  {/* Red Flags */}
-                  {htAnalysis.enhancedData.redFlags.length > 0 && (
-                    <div className="bg-red-500/10 border border-red-500/30 rounded-lg p-4">
-                      <p className={`font-semibold ${textClass} mb-2 flex items-center gap-2`}>
-                        <AlertTriangle className="w-5 h-5 text-red-400" />
-                        Red Flags Críticas
-                      </p>
-                      {htAnalysis.enhancedData.redFlags.map((flag, idx) => (
-                        <p key={idx} className={`text-sm text-red-200`}>• {flag}</p>
-                      ))}
-                    </div>
-                  )}
                 </div>
               )}
 
@@ -2913,11 +3298,9 @@ export default function Home() {
 
         {/* Footer */}
         <div className={`mt-8 text-center text-sm ${textSecondaryClass}`}>
-          <p>Sistema GODMODE 4.0 ULTRA MASTER com 26 regras integradas + Auto-Tuning (0-3). HA+ prioridade • OPC EV≥0 • Shadow xG • Time Bomb • Risk Map • Dead Game • Zero emoção.</p>
+          <p>Sistema vGODMODE 3.0 BALANCEADO com 41 módulos integrados. Modo Balanceado: Alta precisão + mais entradas + risco controlado.</p>
           <p className="mt-2">
-            Módulos: HT Snapshot • Comparação HT→FT • Momentum • Pressure Index • Minute Phase • HA Friendly • 
-            Coherence HA • Shot Quality • Score Contexto • Red Flags • Expected Momentum • Pattern Break • 
-            Fragility Index • TDA • Game Tempo • ERP • Shadow xG • Time Bomb • Dead Game • Risk Map • OPC • True Value • Anti-Conservador • Anti-Overlap • Confidence Score • League Weights • Auto-Tuning Agressividade
+            Novos Módulos v3.0: Green Light • Dead Zone • Score Shield • Timing Score • Lock 3min • Turning Point • Reentrada Inteligente • Mirror Check • OPC Balanceado (EV≥-10%) • HA+ Balanceado (EV≥0%) • Red Flags Amarelas • Confidence Score Ranges
           </p>
         </div>
       </div>
