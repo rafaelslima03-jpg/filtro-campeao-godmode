@@ -12,6 +12,7 @@ import { Textarea } from "@/components/ui/textarea"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Progress } from "@/components/ui/progress"
 import { useToast } from "@/hooks/use-toast"
+import { useRouter } from "next/navigation"
 import { 
   AlertCircle, 
   TrendingUp, 
@@ -31,7 +32,8 @@ import {
   TrendingDown,
   Eye,
   Brain,
-  Gauge
+  Gauge,
+  MessageSquare
 } from "lucide-react"
 
 const DEBUG = true
@@ -2290,6 +2292,7 @@ function performSimpleAnalysis(
 
 export default function Home() {
   const { toast } = useToast()
+  const router = useRouter()
   const [isDark, setIsDark] = useState(true)
 
   useEffect(() => {
@@ -2589,6 +2592,41 @@ export default function Home() {
       setHtAnalysis(result)
       setIsAnalyzing2ndHalf(false)
 
+      // ==================== SALVAR ANÁLISE NA SESSÃO PARA O ASSISTENTE ====================
+      if (typeof window !== "undefined") {
+        const analysisSession = {
+          homeTeam: htData.homeTeam,
+          awayTeam: htData.awayTeam,
+          league: gameData.league || "N/A",
+          score: htData.halftimeScore,
+          minute: minuteSafe,
+          xgHome: htData.xgHome || 0,
+          xgAway: htData.xgAway || 0,
+          shadowXG: result.enhancedData?.shadowXG || 0,
+          momentum: result.enhancedData?.momentumScore || { last5min: 0, last10min: 0, last15min: 0, trend: "neutro" },
+          timeBomb: result.enhancedData?.timeBombActive || false,
+          pressureIndex: result.enhancedData?.pressureIndex || { pressureIndex: 0, isHotMoment: false, occasions: [] },
+          ev: result.ev,
+          haLine: result.haLine || "",
+          haOdd: odd,
+          opcStatus: result.enhancedData?.opcStatus || "OFF ✗",
+          underdogScore: htSnapshotData?.htUnderdogScore || 0,
+          aggroLevel: result.aggroLevel || 1,
+          riskLevel: result.enhancedData?.erp?.impact || "médio",
+          greenLight: result.enhancedData?.greenLightActive || false,
+          deadZone: result.enhancedData?.deadZoneActive || false,
+          scoreShield: result.enhancedData?.scoreShieldActive || false,
+          mirrorCheck: result.enhancedData?.mirrorCheckActive || false,
+          htToFtCoherence: result.enhancedData?.htToFtCoherence || "NEUTRO",
+          riskMapType: result.enhancedData?.riskMapType || "locked",
+          timestamp: Date.now()
+        }
+        
+        localStorage.setItem("godmode_analysis", JSON.stringify(analysisSession))
+        
+        if (DEBUG) console.log("✅ Análise salva na sessão para o Assistente Tático:", analysisSession)
+      }
+
       toast({
         title: "Análise do 2º tempo concluída",
         description: "vGODMODE 3.0 ativado - Modo Balanceado completo!",
@@ -2603,6 +2641,23 @@ export default function Home() {
       timestamp: new Date()
     }
     setHistory(prev => [newEntry, ...prev].slice(0, 10))
+  }
+
+  const openAssistantChat = () => {
+    // Verificar se existe análise válida
+    if (typeof window !== "undefined") {
+      const savedAnalysis = localStorage.getItem("godmode_analysis")
+      if (!savedAnalysis) {
+        toast({
+          title: "Nenhuma análise encontrada",
+          description: "Execute uma análise GODMODE 4.0 antes de usar o Assistente Tático Pro.",
+          variant: "destructive"
+        })
+        return
+      }
+    }
+    
+    router.push("/chat")
   }
 
   const bgClass = isDark 
@@ -2627,10 +2682,10 @@ export default function Home() {
         <div className="flex items-center justify-between mb-8">
           <div className="text-center flex-1">
             <h1 className="text-4xl md:text-5xl font-bold mb-2 bg-gradient-to-r from-emerald-400 to-cyan-400 bg-clip-text text-transparent">
-              Filtro Campeão vGODMODE 3.0 BALANCEADO
+              Filtro Campeão vGODMODE 4.0 + Assistente Tático Pro
             </h1>
             <p className={`text-sm md:text-base ${textSecondaryClass}`}>
-              Modo Balanceado • HA+ EV≥0 • OPC EV≥-10% • Green Light • Dead Zone • Score Shield • Mirror Check • Timing Score • Lock 3min • Turning Point • Reentrada Inteligente
+              Modo Balanceado • HA+ EV≥0 • OPC EV≥-10% • Green Light • Dead Zone • Score Shield • Mirror Check • Timing Score • Lock 3min • Turning Point • Reentrada Inteligente • 30 Módulos Assistente
             </p>
           </div>
           
@@ -2643,6 +2698,22 @@ export default function Home() {
             <Moon className={`w-5 h-5 ${isDark ? "text-blue-400" : "text-slate-400"}`} />
           </div>
         </div>
+
+        {/* Botão Assistente Tático Pro */}
+        <Card className={`mb-6 ${cardClass}`}>
+          <CardContent className="pt-6">
+            <Button
+              onClick={openAssistantChat}
+              className="w-full bg-gradient-to-r from-cyan-600 to-blue-600 hover:from-cyan-700 hover:to-blue-700 text-white text-lg py-6"
+            >
+              <MessageSquare className="w-6 h-6 mr-2" />
+              Abrir Assistente Tático Pro
+            </Button>
+            <p className={`text-xs ${textSecondaryClass} mt-2 text-center`}>
+              30 módulos interpretativos • Oráculo • Mentor de Risco • Replay Tático • Sinais Contraditórios
+            </p>
+          </CardContent>
+        </Card>
 
         {/* Modo de Operação */}
         <Card className={`mb-6 ${cardClass}`}>
@@ -2668,7 +2739,7 @@ export default function Home() {
             <p className={`text-sm ${textSecondaryClass}`}>
               {mode === "LAB" 
                 ? "Modo flexível para testar cenários. Sem travas rígidas."
-                : "Modo profissional com vGODMODE 3.0 Balanceado: mais entradas + risco controlado + 15 novos módulos."}
+                : "Modo profissional com vGODMODE 4.0 Balanceado: mais entradas + risco controlado + 41 módulos + Assistente Tático Pro."}
             </p>
 
             {mode === "REAL" && (
@@ -2862,7 +2933,7 @@ export default function Home() {
             <CardHeader>
               <CardTitle className={`flex items-center gap-2 ${textClass}`}>
                 <Activity className="w-5 h-5 text-cyan-400" />
-                Análise HT → FT (Live) - vGODMODE 3.0
+                Análise HT → FT (Live) - vGODMODE 4.0
               </CardTitle>
               <CardDescription className={textSecondaryClass}>Análise do 2º tempo com Modo Balanceado completo</CardDescription>
             </CardHeader>
@@ -2989,7 +3060,7 @@ export default function Home() {
                 disabled={htLoading || !htData || isAnalyzing2ndHalf}
                 className="w-full bg-orange-600 hover:bg-orange-700 text-white"
               >
-                {isAnalyzing2ndHalf ? "Analisando 2º Tempo..." : "🚀 Analisar 2º Tempo (vGODMODE 3.0)"}
+                {isAnalyzing2ndHalf ? "Analisando 2º Tempo..." : "🚀 Analisar 2º Tempo (vGODMODE 4.0)"}
               </Button>
             </CardContent>
           </Card>
@@ -3108,13 +3179,13 @@ export default function Home() {
           </Card>
         )}
 
-        {/* Resultado HT→FT com vGODMODE 3.0 */}
+        {/* Resultado HT→FT com vGODMODE 4.0 */}
         {htAnalysis && htAnalysis.enhancedData && (
           <Card className={`mb-6 ${cardClass}`}>
             <CardHeader>
               <CardTitle className={`flex items-center gap-2 ${textClass}`}>
                 <Brain className="w-5 h-5 text-cyan-400" />
-                Resultado da Análise HT → FT (vGODMODE 3.0 BALANCEADO)
+                Resultado da Análise HT → FT (vGODMODE 4.0 + Assistente Tático Pro)
               </CardTitle>
             </CardHeader>
             <CardContent className="space-y-4">
@@ -3174,7 +3245,7 @@ export default function Home() {
                 </div>
               </div>
 
-              {/* vGODMODE 3.0 Indicators */}
+              {/* vGODMODE 4.0 Indicators */}
               <div className="grid md:grid-cols-3 gap-4">
                 <div className={`${isDark ? "bg-slate-800" : "bg-slate-100"} p-4 rounded-lg`}>
                   <p className={`text-xs ${textSecondaryClass} mb-1`}>Green Light</p>
@@ -3298,9 +3369,9 @@ export default function Home() {
 
         {/* Footer */}
         <div className={`mt-8 text-center text-sm ${textSecondaryClass}`}>
-          <p>Sistema vGODMODE 3.0 BALANCEADO com 41 módulos integrados. Modo Balanceado: Alta precisão + mais entradas + risco controlado.</p>
+          <p>Sistema vGODMODE 4.0 + Assistente Tático Pro com 71 módulos integrados. Modo Balanceado: Alta precisão + mais entradas + risco controlado.</p>
           <p className="mt-2">
-            Novos Módulos v3.0: Green Light • Dead Zone • Score Shield • Timing Score • Lock 3min • Turning Point • Reentrada Inteligente • Mirror Check • OPC Balanceado (EV≥-10%) • HA+ Balanceado (EV≥0%) • Red Flags Amarelas • Confidence Score Ranges
+            Novos Módulos v4.0: Assistente Tático Pro (30 módulos) • Oráculo • Mentor de Risco • Replay Tático • Sinais Contraditórios • Previsão Binária • Leitura Vocal • Anti-Trap Emocional • Perfil Underdog • Sistema de Sessão • Bloqueio de Chat • Validação de Consistência
           </p>
         </div>
       </div>
