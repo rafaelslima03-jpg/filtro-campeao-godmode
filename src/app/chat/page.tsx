@@ -8,6 +8,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { Alert, AlertDescription } from "@/components/ui/alert"
+import { Progress } from "@/components/ui/progress"
 import { 
   Send, 
   Sparkles, 
@@ -22,7 +23,15 @@ import {
   Activity,
   RefreshCw,
   Lock,
-  ArrowLeft
+  ArrowLeft,
+  Zap,
+  Compass,
+  Radar,
+  MapPin,
+  AlertCircle,
+  TrendingDown,
+  Crosshair,
+  Flag
 } from "lucide-react"
 import { GodmodeSession, type GodmodeAnalysisData } from "@/lib/godmode-session"
 
@@ -30,9 +39,260 @@ import { GodmodeSession, type GodmodeAnalysisData } from "@/lib/godmode-session"
 
 interface Message {
   id: string
-  role: "user" | "assistant"
+  role: "user" | "assistant" | "system"
   content: string
   timestamp: Date
+}
+
+// ==================== HA+ SHIELD FACTOR (MÓDULO LIVE EXCLUSIVO) ====================
+
+const HA_SHIELD_FACTOR = {
+  0.25: 0.02,
+  0.50: 0.05,
+  0.75: 0.07,
+  1.00: 0.09,
+  1.25: 0.11,
+  1.50: 0.13,
+  2.00: 0.16
+} as const
+
+type HALine = keyof typeof HA_SHIELD_FACTOR
+
+function getHAShieldFactor(line: number): number {
+  const closestLine = Object.keys(HA_SHIELD_FACTOR)
+    .map(Number)
+    .reduce((prev, curr) => 
+      Math.abs(curr - line) < Math.abs(prev - line) ? curr : prev
+    ) as HALine
+  
+  return HA_SHIELD_FACTOR[closestLine]
+}
+
+// ==================== REGIMES INTERNOS DE HA+ (LIVE) ====================
+
+interface HARegimeCheck {
+  regime: "A" | "B" | "C"
+  passed: boolean
+  requirements: string[]
+}
+
+function checkHARegime(line: number, context: GodmodeAnalysisData): HARegimeCheck {
+  const { ev, momentum, riskMapType, shadowXG } = context
+  
+  // Regime A - HA Apertado (+0.25 / +0.5)
+  if (line <= 0.5) {
+    const requirements = [
+      `EV ≥ 3% (atual: ${ev.toFixed(2)}%)`,
+      `Momentum ≥ 30 (atual: ${momentum.last5min.toFixed(0)})`,
+      `Risk Map não DEAD (atual: ${riskMapType})`
+    ]
+    
+    const passed = ev >= 3 && momentum.last5min >= 30 && riskMapType !== "dead"
+    
+    return { regime: "A", passed, requirements }
+  }
+  
+  // Regime B - HA Intermediário (+0.75 / +1.0)
+  if (line <= 1.0) {
+    const requirements = [
+      `EV ≥ 0% (atual: ${ev.toFixed(2)}%)`,
+      `Jogo não descontrolado (Risk Map: ${riskMapType})`,
+      `Shadow xG não crítico (atual: ${shadowXG.toFixed(2)})`
+    ]
+    
+    const passed = ev >= 0 && riskMapType !== "chaotic" && shadowXG < 0.6
+    
+    return { regime: "B", passed, requirements }
+  }
+  
+  // Regime C - HA Escudo (+1.25 / +1.5 / +2.0)
+  const requirements = [
+    `EV 0% ~ +2% (atual: ${ev.toFixed(2)}%)`,
+    `Shadow xG baixo (atual: ${shadowXG.toFixed(2)})`,
+    `Jogo travado (Risk Map: ${riskMapType})`
+  ]
+  
+  const passed = ev >= 0 && ev <= 2 && shadowXG < 0.3 && (riskMapType === "dead" || riskMapType === "controlled")
+  
+  return { regime: "C", passed, requirements }
+}
+
+// ==================== FILTROS LIVE DE HA+ ====================
+
+function checkHADeadScenario(context: GodmodeAnalysisData): { blocked: boolean; reasons: string[] } {
+  const reasons: string[] = []
+  let conditionsTrue = 0
+  
+  // Finalizações últimos 10 min = 0 (simulado)
+  if (context.stats.shotsTotalHome + context.stats.shotsTotalAway < 3) {
+    reasons.push("Finalizações muito baixas")
+    conditionsTrue++
+  }
+  
+  // Ataques perigosos últimos 8 min = 0 (simulado)
+  if (context.stats.dangerousAttacksHome + context.stats.dangerousAttacksAway < 5) {
+    reasons.push("Ataques perigosos muito baixos")
+    conditionsTrue++
+  }
+  
+  // Pressure Index < 10
+  if (context.pressureIndex.pressureIndex < 10) {
+    reasons.push(`Pressure Index muito baixo (${context.pressureIndex.pressureIndex.toFixed(0)})`)
+    conditionsTrue++
+  }
+  
+  // Momentum < 25
+  if (context.momentum.last5min < 25) {
+    reasons.push(`Momentum muito baixo (${context.momentum.last5min.toFixed(0)})`)
+    conditionsTrue++
+  }
+  
+  // Shadow xG < 0.05
+  if (context.shadowXG < 0.05) {
+    reasons.push(`Shadow xG muito baixo (${context.shadowXG.toFixed(2)})`)
+    conditionsTrue++
+  }
+  
+  return {
+    blocked: conditionsTrue >= 4,
+    reasons
+  }
+}
+
+function checkAntiIlusaoMode(haLine: number, oddHA: number, fairLine: number): { penalty: number; reason: string } {
+  const oddDiff = ((oddHA - fairLine) / fairLine) * 100
+  
+  if (oddDiff >= 20) {
+    return {
+      penalty: -15,
+      reason: `Odd ${oddDiff.toFixed(0)}% acima do Fair Line - reduzindo confiança`
+    }
+  }
+  
+  return { penalty: 0, reason: "" }
+}
+
+function checkShadowXGFilter(line: number, context: GodmodeAnalysisData): { blocked: boolean; reason: string } {
+  // Para HA +0.25 e +0.50
+  if (line <= 0.5) {
+    if (context.shadowXG < 0.03 && context.stats.shotsTotalAway < 2) {
+      return {
+        blocked: true,
+        reason: "Shadow xG muito baixo + sem finalizações recentes"
+      }
+    }
+  }
+  
+  // Para linhas ≥ +1.0, não bloqueia
+  return { blocked: false, reason: "" }
+}
+
+// ==================== AGGRO LEVEL (LIVE) ====================
+
+function applyAggroLevelFilters(
+  aggroLevel: number,
+  line: number,
+  context: GodmodeAnalysisData,
+  oddHA: number = 1.85,
+  fairLine: number = 1.75
+): {
+  allowed: boolean
+  confidence: number
+  reasons: string[]
+} {
+  const reasons: string[] = []
+  let confidence = 70 // Base
+  
+  // AggroLevel 1 - Conservador Pro
+  if (aggroLevel === 1) {
+    // Todos os filtros rígidos
+    const deadScenario = checkHADeadScenario(context)
+    if (deadScenario.blocked) {
+      return {
+        allowed: false,
+        confidence: 0,
+        reasons: ["Cenário Morto detectado (AggroLevel 1)", ...deadScenario.reasons]
+      }
+    }
+    
+    const shadowFilter = checkShadowXGFilter(line, context)
+    if (shadowFilter.blocked) {
+      return {
+        allowed: false,
+        confidence: 0,
+        reasons: ["Shadow xG Filter bloqueou (AggroLevel 1)", shadowFilter.reason]
+      }
+    }
+    
+    const antiIlusao = checkAntiIlusaoMode(line, oddHA, fairLine)
+    confidence += antiIlusao.penalty
+    if (antiIlusao.reason) reasons.push(antiIlusao.reason)
+    
+    const regime = checkHARegime(line, context)
+    if (!regime.passed) {
+      return {
+        allowed: false,
+        confidence: 0,
+        reasons: [`Regime ${regime.regime} não cumprido (AggroLevel 1)`, ...regime.requirements]
+      }
+    }
+    
+    reasons.push(`Regime ${regime.regime} cumprido`, "Todos os filtros rígidos passaram")
+  }
+  
+  // AggroLevel 2 - Balanceado
+  if (aggroLevel === 2) {
+    const deadScenario = checkHADeadScenario(context)
+    if (deadScenario.blocked) {
+      return {
+        allowed: false,
+        confidence: 0,
+        reasons: ["Cenário Morto detectado (4+ condições)", ...deadScenario.reasons]
+      }
+    }
+    
+    const antiIlusao = checkAntiIlusaoMode(line, oddHA, fairLine)
+    confidence += antiIlusao.penalty
+    if (antiIlusao.reason) reasons.push(antiIlusao.reason + " (não bloqueia)")
+    
+    const regime = checkHARegime(line, context)
+    if (!regime.passed) {
+      confidence -= 20
+      reasons.push(`Regime ${regime.regime} não cumprido - reduzindo confiança`)
+    } else {
+      reasons.push(`Regime ${regime.regime} cumprido`)
+    }
+  }
+  
+  // AggroLevel 3 - Agressivo Controlado
+  if (aggroLevel === 3) {
+    const regime = checkHARegime(line, context)
+    if (!regime.passed) {
+      confidence -= 15
+      reasons.push(`Regime ${regime.regime} não cumprido - redução leve`)
+    } else {
+      reasons.push(`Regime ${regime.regime} cumprido`)
+    }
+    
+    const shadowFilter = checkShadowXGFilter(line, context)
+    if (shadowFilter.blocked) {
+      confidence -= 10
+      reasons.push("Shadow xG baixo - reduzindo confiança (não bloqueia)")
+    }
+    
+    reasons.push("Modo agressivo - filtros suavizados")
+  }
+  
+  // Aplicar HA Shield Factor
+  const shieldFactor = getHAShieldFactor(line)
+  confidence = Math.min(80, confidence + (shieldFactor * 100))
+  reasons.push(`HA Shield Factor +${(shieldFactor * 100).toFixed(0)}%`)
+  
+  return {
+    allowed: true,
+    confidence: Math.max(0, Math.min(100, confidence)),
+    reasons
+  }
 }
 
 // ==================== ASSISTENTE TÁTICO PRO - 30 MÓDULOS ====================
@@ -77,220 +337,393 @@ const TACTICAL_MODULES = {
   }
 }
 
-// ==================== ATALHOS TÁTICOS ====================
+// ==================== ATALHOS TÁTICOS EM 6 CATEGORIAS ====================
 
-const QUICK_ACTIONS = [
-  { id: "oraculo", label: "🔮 Oráculo", icon: Sparkles },
-  { id: "proximo-gol", label: "🎯 Próximo Gol", icon: Target },
-  { id: "proximo-cartao", label: "⚠️ Próximo Cartão", icon: AlertTriangle },
-  { id: "escanteio-provavel", label: "🔥 Escanteio", icon: Flame },
-  { id: "pressao-real", label: "📈 Pressão Real", icon: TrendingUp },
-  { id: "sinais-contradictorios", label: "🧱 Sinais", icon: BarChart3 },
-  { id: "replay-tatico", label: "⏮️ Replay", icon: Activity },
-  { id: "mentor-risco", label: "🧠 Risco", icon: Shield }
+const TACTICAL_SHORTCUTS = {
+  gols: [
+    { id: "proximo-gol", label: "Próximo Gol", icon: Target },
+    { id: "vai-sair-gol", label: "Vai sair gol?", icon: Sparkles },
+    { id: "quem-perto-marcar", label: "Quem está mais perto?", icon: Crosshair },
+    { id: "gol-5min", label: "% gol próximos 5 min", icon: Zap },
+    { id: "explodir-morrer", label: "Explodir ou morrer?", icon: Flame },
+    { id: "comparacao-1t-2t", label: "Comparação 1T X 2T", icon: BarChart3 }
+  ],
+  cartoes: [
+    { id: "proximo-cartao", label: "Próximo cartão", icon: AlertTriangle },
+    { id: "quem-leva-cartao", label: "Quem está mais perto?", icon: AlertCircle },
+    { id: "risco-disciplinar", label: "Risco disciplinar", icon: Shield },
+    { id: "heatmap-emocional", label: "Heatmap emocional", icon: Activity }
+  ],
+  escanteios: [
+    { id: "chance-escanteio", label: "Chance de escanteio", icon: Flag },
+    { id: "pressao-lateral", label: "Pressão lateral", icon: TrendingUp },
+    { id: "microritmo-corners", label: "Microritmo corners", icon: Activity },
+    { id: "sequencia-provavel", label: "Sequência provável", icon: Radar }
+  ],
+  tendencia: [
+    { id: "jogo-morrer", label: "Jogo vai morrer?", icon: TrendingDown },
+    { id: "jogo-explodir", label: "Jogo vai explodir?", icon: Flame },
+    { id: "ritmo-atual", label: "Ritmo atual", icon: Activity },
+    { id: "pressao-real-falsa", label: "Pressão real vs falsa", icon: Eye }
+  ],
+  viradaEmpate: [
+    { id: "chance-virada", label: "Chance de virada", icon: RefreshCw },
+    { id: "chance-empate", label: "Chance de empate", icon: Target },
+    { id: "quem-controla", label: "Quem controla o jogo", icon: Compass },
+    { id: "reacao-underdog", label: "Reação do underdog", icon: TrendingUp }
+  ],
+  oraculo: [
+    { id: "previsao-completa", label: "Previsão completa", icon: Sparkles },
+    { id: "caminhos-provaveis", label: "Caminhos prováveis", icon: MapPin },
+    { id: "eventos-futuros", label: "Eventos futuros", icon: Eye },
+    { id: "diagnostico-final", label: "Diagnóstico final", icon: Brain }
+  ]
+}
+
+// ==================== SUGESTÕES RÁPIDAS (QUICK REPLIES) ====================
+
+const QUICK_REPLIES = [
+  { id: "gps", label: "📍 GPS do Jogo", icon: Compass },
+  { id: "proximo-gol", label: "⚽ Próximo Gol", icon: Target },
+  { id: "vai-explodir", label: "💥 Vai explodir?", icon: Flame },
+  { id: "pressao-real", label: "👁️ Pressão Real", icon: Eye },
+  { id: "ha-plus", label: "🛡️ Análise HA+", icon: Shield },
+  { id: "oraculo", label: "🔮 Oráculo Completo", icon: Sparkles }
 ]
+
+// ==================== GPS DO JOGO (100% SEGURO) ====================
+
+function calculateGPS(context: GodmodeAnalysisData) {
+  const { momentum, shadowXG, pressureIndex, minute, riskMapType, rdsFora, rdsCasa } = context
+  
+  // PROTEÇÃO CRÍTICA: Safe-check para corners
+  const cornersHome = context?.stats?.cornersHome ?? 0
+  const cornersAway = context?.stats?.cornersAway ?? 0
+  
+  // Log interno (dev mode)
+  if (cornersHome === 0 && cornersAway === 0) {
+    console.warn("Stats incompletos no GPS:", context.stats)
+  }
+  
+  // Classificar fase atual
+  let fase = "estudo"
+  if (minute < 15) fase = "estudo"
+  else if (momentum.last5min >= 70 && pressureIndex.pressureIndex >= 65) fase = "caos"
+  else if (pressureIndex.pressureIndex >= 60) fase = "pressão"
+  else if (minute >= 75) fase = "desgaste"
+  else if (riskMapType === "dead") fase = "sobrevivência"
+  
+  // Prever caminhos prováveis
+  const golM = Math.min(85, (pressureIndex.pressureIndex * 0.4) + (shadowXG * 20) + (momentum.last5min * 0.3))
+  const golV = Math.min(85, (rdsFora * 0.5) + (shadowXG * 15) + (momentum.last5min * 0.2))
+  const nadaAcontece = riskMapType === "dead" ? 70 : Math.max(5, 100 - golM - golV)
+  const cartao = Math.min(60, (minute >= 70 ? 40 : 20) + (riskMapType === "chaotic" ? 20 : 0))
+  
+  // CÁLCULO SEGURO DE ESCANTEIOS (nunca quebra)
+  const escanteio = Math.min(75, (cornersHome + cornersAway) * 5)
+  
+  // Nível de confiança para escanteios
+  const confiancaEscanteio = (cornersHome + cornersAway) === 0 ? "baixa" : 
+                             (cornersHome + cornersAway) >= 6 ? "alta" : "média"
+  
+  // Prever tendência
+  let tendencia = "estabilizar"
+  if (momentum.trend === "crescendo" && shadowXG > 0.3) tendencia = "explodir"
+  else if (riskMapType === "dead") tendencia = "morrer"
+  else if (momentum.trend === "caindo") tendencia = "esfriar"
+  
+  return {
+    fase,
+    caminhos: { golM, golV, nadaAcontece, cartao, escanteio },
+    tendencia,
+    confiancaEscanteio,
+    hasStats: cornersHome > 0 || cornersAway > 0
+  }
+}
+
+// ==================== CHAOS METER ====================
+
+function calculateChaosMeter(context: GodmodeAnalysisData): number {
+  const { momentum, shadowXG, pressureIndex, timeBombActive, riskMapType } = context
+  
+  let chaos = 0
+  
+  // Momentum (0-30 pontos)
+  chaos += (momentum.last5min / 100) * 30
+  
+  // Shadow xG (0-20 pontos)
+  chaos += Math.min(20, shadowXG * 40)
+  
+  // Pressure Index (0-25 pontos)
+  chaos += (pressureIndex.pressureIndex / 100) * 25
+  
+  // Time Bomb (0-15 pontos)
+  if (timeBombActive) chaos += 15
+  
+  // Risk Map (0-10 pontos)
+  if (riskMapType === "explosive") chaos += 10
+  else if (riskMapType === "chaotic") chaos += 8
+  
+  return Math.min(100, Math.max(0, chaos))
+}
+
+// ==================== ORÁCULO PRO+ (AUTO-MONITORAMENTO) ====================
+
+function detectAutoAlerts(context: GodmodeAnalysisData): string[] {
+  const alerts: string[] = []
+  
+  if (context.momentum.trend === "crescendo" && context.momentum.last5min >= 70) {
+    alerts.push("🔥 Mudança brusca detectada – pressão real do mandante.")
+  }
+  
+  if (context.timeBombActive) {
+    alerts.push("💣 Time Bomb em formação.")
+  }
+  
+  if (context.shadowXG >= 0.4) {
+    alerts.push("⚠️ Shadow xG alto — gol provável.")
+  }
+  
+  if (context.riskMapType === "dead") {
+    alerts.push("🧊 Jogo esfriando — tendência de morrer.")
+  }
+  
+  if (context.patternBreak === "sim") {
+    alerts.push("⚡ Pattern Break detectado — jogo mudou completamente.")
+  }
+  
+  return alerts
+}
+
+// ==================== EVENTO OCULTO ====================
+
+function detectHiddenEvents(context: GodmodeAnalysisData): string[] {
+  const events: string[] = []
+  
+  // Colapso de setor
+  if (context.stats.shotsOnTargetAway >= 6 && context.xgAway >= 1.8) {
+    events.push("⚠️ Evento oculto detectado – defesa casa colapsando.")
+  }
+  
+  // Shadow xG não convertido
+  if (context.shadowXG >= 0.5 && context.stats.goalsHome + context.stats.goalsAway < 2) {
+    events.push("🔥 Acúmulo silencioso de quase-gols. Grande risco.")
+  }
+  
+  // Pressão silenciosa
+  if (context.pressureIndex.pressureIndex >= 65 && context.stats.shotsTotalAway < 8) {
+    events.push("👁️ Pressão silenciosa detectada – visitante eficiente.")
+  }
+  
+  // Defesa cansando
+  if (context.minute >= 70 && context.momentum.last5min >= 60) {
+    events.push("⚠️ Defesa cansando – vulnerabilidade crescente.")
+  }
+  
+  return events
+}
+
+// ==================== AUTO-SUGESTÕES INTELIGENTES ====================
+
+function generateAutoSuggestions(context: GodmodeAnalysisData): string[] {
+  const suggestions: string[] = []
+  
+  if (context.timeBombActive) {
+    suggestions.push("Pergunta recomendada: Quem está mais perto de marcar?")
+  }
+  
+  if (context.shadowXG >= 0.35) {
+    suggestions.push("Boa hora para perguntar: Vai sair gol?")
+  }
+  
+  const chaosMeter = calculateChaosMeter(context)
+  if (chaosMeter >= 60) {
+    suggestions.push("Pergunta útil agora: Jogo vai explodir?")
+  }
+  
+  if (context.momentum.last5min >= 70) {
+    suggestions.push("Momento ideal: Chance de escanteio?")
+  }
+  
+  if (context.patternBreak === "sim") {
+    suggestions.push("Recomendado: O que mudou nos últimos 5 minutos?")
+  }
+  
+  return suggestions
+}
 
 // ==================== GERADOR DE RESPOSTAS TÁTICAS ====================
 
 function generateTacticalResponse(query: string, context: GodmodeAnalysisData): string {
   const lowerQuery = query.toLowerCase()
   
-  // 🔮 ORÁCULO - Modo Oráculo
-  if (lowerQuery.includes("oráculo") || lowerQuery.includes("vai sair gol")) {
-    let prediction = "NEUTRO"
-    let reason = ""
+  // GPS DO JOGO
+  if (lowerQuery.includes("gps") || lowerQuery.includes("panorama") || lowerQuery.includes("resumo tático")) {
+    const gps = calculateGPS(context)
     
-    if (context.timeBombActive && context.momentum.trend === "crescendo") {
-      prediction = "GOL IMINENTE"
-      reason = "Time Bomb ativa + Momentum crescente + Shadow xG alto"
-    } else if (context.deadGameDetected) {
-      prediction = "JOGO MORTO"
-      reason = "Dead Game detectado - xG parado, ritmo lento"
-    } else if (context.momentum.last5min >= 75 && context.pressureIndex.pressureIndex >= 70) {
-      prediction = "ACELERAÇÃO PROVÁVEL"
-      reason = "Momentum e pressão altos indicam explosão iminente"
-    } else if (context.riskMapType === "dead") {
-      prediction = "SEM GOL"
-      reason = "Risk Map = DEAD - jogo travado"
-    } else {
-      prediction = "CENÁRIO NEUTRO"
-      reason = "Indicadores mistos - aguardar próximos minutos"
-    }
+    // Aviso se dados incompletos
+    const avisoStats = !gps.hasStats ? "\n\n⚠️ Alguns dados live estão incompletos. Usarei apenas métricas confiáveis." : ""
     
-    return `🔮 **MODO ORÁCULO - Previsão Direta**\n\n**Cenário:** ${context.homeTeam} ${context.score} ${context.awayTeam} (${context.minute}')\n\n**Previsão:** ${prediction}\n\n**Motivo:** ${reason}\n\n**Dados:**\n• Momentum: ${context.momentum.last5min.toFixed(0)}/100 (${context.momentum.trend})\n• Shadow xG: ${context.shadowXG.toFixed(2)}\n• Time Bomb: ${context.timeBombActive ? "ATIVA 💣" : "Inativa"}\n• Pressure Index: ${context.pressureIndex.pressureIndex.toFixed(0)}/100\n\n**Janela:** Próximos 8-12 minutos`
+    return `🧭 **GPS DO JOGO™ - Game Positioning System**
+
+**Fase Atual:** ${gps.fase.toUpperCase()}
+
+**Posição do Jogo:**
+• Momentum: ${context.momentum.last5min.toFixed(0)}/100 (${context.momentum.trend})
+• Shadow xG: ${context.shadowXG.toFixed(2)}
+• Pressão Real: ${context.pressureIndex.pressureIndex.toFixed(0)}/100
+• Risk Map: ${context.riskMapType.toUpperCase()}
+
+**Caminhos Prováveis (%):**
+🎯 Gol Mandante: ${gps.caminhos.golM.toFixed(0)}%
+🎯 Gol Visitante: ${gps.caminhos.golV.toFixed(0)}%
+⚪ Nada acontece: ${gps.caminhos.nadaAcontece.toFixed(0)}%
+⚠️ Cartão: ${gps.caminhos.cartao.toFixed(0)}%
+🚩 Escanteio: ${gps.caminhos.escanteio.toFixed(0)}% (confiança ${gps.confiancaEscanteio})
+
+**Tendência:** ${gps.tendencia.toUpperCase()}
+
+**Comparação 1T→2T:** ${context.htToFtCoherence || "N/A"}${avisoStats}`
   }
   
-  // 🧠 MENTOR DE RISCO
-  if (lowerQuery.includes("mentor") || lowerQuery.includes("risco")) {
-    let riskLevel = "MÉDIO"
-    let riskColor = "🟡"
+  // ANÁLISE HA+ LIVE (NOVO)
+  if (lowerQuery.includes("ha+") || lowerQuery.includes("handicap asiático") || lowerQuery.includes("análise ha")) {
+    const haLine = 1.0 // Exemplo - pode ser extraído da query
+    const aggroLevel = context.aggroLevel
     
-    if (context.deadZoneActive) {
-      riskLevel = "CRÍTICO"
-      riskColor = "🔴"
-    } else if (context.greenLightActive) {
-      riskLevel = "BAIXO"
-      riskColor = "🟢"
-    } else if (context.aggroLevel >= 3) {
-      riskLevel = "ALTO"
-      riskColor = "🟠"
-    } else if (context.aggroLevel === 0) {
-      riskLevel = "MÍNIMO"
-      riskColor = "🟢"
-    }
+    const haAnalysis = applyAggroLevelFilters(aggroLevel, haLine, context)
+    const regime = checkHARegime(haLine, context)
+    const deadScenario = checkHADeadScenario(context)
+    const shieldFactor = getHAShieldFactor(haLine)
     
-    return `🧠 **MENTOR DE RISCO**\n\n**Nível de Risco:** ${riskColor} ${riskLevel}\n\n**AggroLevel:** ${context.aggroLevel} (${context.aggroLevelName})\n\n**Motivos Objetivos:**\n${context.greenLightActive ? "✅ Green Light ativo - entrada segura\n" : ""}${context.deadZoneActive ? "🔴 Dead Zone ativa - ENTRADA PROIBIDA\n" : ""}${context.timeBombActive ? "💣 Time Bomb ativa - risco de gol contra\n" : ""}${context.htToFtCoherence === "ROTEIRO CONFIRMADO" ? "✅ Roteiro confirmado\n" : ""}${context.htToFtCoherence === "ROTEIRO ROMPIDO" ? "⚠️ Roteiro rompido\n" : ""}• Shadow xG: ${context.shadowXG.toFixed(2)}\n• RDS Fora: ${context.rdsFora.toFixed(1)}\n• Confidence: ${context.confidence.toFixed(1)}%\n\n**Recomendação:** ${context.deadZoneActive ? "NÃO ENTRAR" : context.greenLightActive ? "Entrada aprovada" : "Cautela moderada"}`
+    return `🛡️ **ANÁLISE HA+ LIVE - Linha +${haLine.toFixed(2)}**
+
+**AggroLevel:** ${aggroLevel} (${context.aggroLevelName})
+
+**HA Shield Factor:** +${(shieldFactor * 100).toFixed(0)}% (proteção da linha)
+
+**Regime Aplicado:** ${regime.regime}
+${regime.passed ? "✅ CUMPRIDO" : "❌ NÃO CUMPRIDO"}
+
+**Requisitos do Regime:**
+${regime.requirements.map(r => `• ${r}`).join("\n")}
+
+**Filtro de Cenário Morto:**
+${deadScenario.blocked ? "🔴 BLOQUEADO" : "✅ LIBERADO"}
+${deadScenario.reasons.length > 0 ? `\n${deadScenario.reasons.map(r => `• ${r}`).join("\n")}` : ""}
+
+**Resultado Final:**
+• Entrada: ${haAnalysis.allowed ? "✅ PERMITIDA" : "🔴 BLOQUEADA"}
+• Confiança: ${haAnalysis.confidence.toFixed(0)}%
+
+**Motivos:**
+${haAnalysis.reasons.map(r => `• ${r}`).join("\n")}
+
+**Recomendação:**
+${haAnalysis.allowed && haAnalysis.confidence >= 60 ? 
+  "✅ HA+ aprovado com confiança adequada" :
+  haAnalysis.allowed && haAnalysis.confidence < 60 ?
+  "⚠️ HA+ permitido mas com baixa confiança - cautela" :
+  "🚫 HA+ bloqueado - aguardar melhores condições"}`
   }
   
-  // 🎯 PRÓXIMO GOL
-  if (lowerQuery.includes("próximo gol") || lowerQuery.includes("quem marca")) {
-    const homeXG = context.xgHome
-    const awayXG = context.xgAway
-    const homePressure = context.pressureIndex.pressureIndex
-    const awayMomentum = context.momentum.last5min
+  // PREVISÃO COMPLETA (ORÁCULO)
+  if (lowerQuery.includes("previsão completa") || lowerQuery.includes("oráculo completo")) {
+    const gps = calculateGPS(context)
+    const chaosMeter = calculateChaosMeter(context)
     
-    let maisProvavel = context.awayTeam
-    let probabilidade = 50
-    
-    if (awayXG > homeXG && awayMomentum > 60) {
-      maisProvavel = context.awayTeam
-      probabilidade = 65 + (awayMomentum - 60) * 0.5
-    } else if (homeXG > awayXG && homePressure > 60) {
-      maisProvavel = context.homeTeam
-      probabilidade = 60 + (homePressure - 60) * 0.5
-    }
-    
-    if (context.timeBombActive) probabilidade += 10
-    if (context.shadowXG > 0.5) probabilidade += 8
-    
-    probabilidade = Math.min(85, probabilidade)
-    
-    return `🎯 **PRÓXIMO GOL - Análise**\n\n**Mais Provável:** ${maisProvavel}\n\n**Fatores:**\n• xG: ${maisProvavel === context.awayTeam ? awayXG.toFixed(2) : homeXG.toFixed(2)}\n• Momentum: ${context.momentum.last5min.toFixed(0)}/100 (${context.momentum.trend})\n• Pressure Index: ${context.pressureIndex.pressureIndex.toFixed(0)}/100\n• Shadow xG: ${context.shadowXG.toFixed(2)}\n• Ataques perigosos: ${maisProvavel === context.awayTeam ? context.stats.dangerousAttacksAway : context.stats.dangerousAttacksHome}\n• Time Bomb: ${context.timeBombActive ? "ATIVA 💣" : "Inativa"}\n\n**Probabilidade:** ${probabilidade.toFixed(0)}%\n**Janela:** Próximos 10-15 minutos`
-  }
-  
-  // ⚠️ PRÓXIMO CARTÃO
-  if (lowerQuery.includes("cartão") || lowerQuery.includes("amarelo")) {
-    const totalYellowHome = context.stats.yellowHome
-    const totalYellowAway = context.stats.yellowAway
-    const totalRedHome = context.stats.redHome
-    const totalRedAway = context.stats.redAway
-    
-    let maisProvavel = totalYellowHome > totalYellowAway ? context.homeTeam : context.awayTeam
-    let probabilidade = 60
-    
-    if (context.riskMapType === "chaotic") probabilidade += 15
-    if (context.momentum.trend === "crescendo") probabilidade += 10
-    if (context.minute >= 70) probabilidade += 10
-    
-    return `⚠️ **PRÓXIMO CARTÃO - Análise**\n\n**Mais Provável:** ${maisProvavel}\n\n**Fatores:**\n• Cartões amarelos: ${totalYellowHome} (casa) vs ${totalYellowAway} (fora)\n• Cartões vermelhos: ${totalRedHome} (casa) vs ${totalRedAway} (fora)\n• Risk Map: ${context.riskMapType.toUpperCase()}\n• Momentum: ${context.momentum.trend.toUpperCase()}\n• Minuto: ${context.minute}' (pressão ${context.minute >= 70 ? "alta" : "moderada"})\n\n**Probabilidade:** ${probabilidade.toFixed(0)}%\n**Tipo esperado:** ${probabilidade > 75 ? "Amarelo (falta tática)" : "Amarelo (falta dura)"}`
-  }
-  
-  // 📈 PRESSÃO REAL vs FALSA
-  if (lowerQuery.includes("pressão")) {
-    const isPressaoReal = context.pressureIndex.pressureIndex >= 60 && context.shadowXG > 0.2
-    
-    return `📈 **PRESSÃO REAL vs FALSA**\n\n**Diagnóstico:** ${isPressaoReal ? "PRESSÃO REAL ✅" : "PRESSÃO FALSA ⚠️"}\n\n**Evidências:**\n${context.stats.shotsOnTargetHome >= 5 ? `✅ Finalizações no alvo (casa): ${context.stats.shotsOnTargetHome}\n` : ""}${context.stats.shotsOnTargetAway >= 5 ? `✅ Finalizações no alvo (fora): ${context.stats.shotsOnTargetAway}\n` : ""}${context.xgHome > 1.5 ? `✅ xG casa crescente: ${context.xgHome.toFixed(2)}\n` : ""}${context.xgAway > 1.5 ? `✅ xG fora crescente: ${context.xgAway.toFixed(2)}\n` : ""}${context.shadowXG > 0.3 ? `✅ Shadow xG: ${context.shadowXG.toFixed(2)}\n` : ""}${context.stats.dangerousAttacksHome >= 30 ? `✅ Ataques perigosos (casa): ${context.stats.dangerousAttacksHome}\n` : ""}${context.stats.dangerousAttacksAway >= 30 ? `✅ Ataques perigosos (fora): ${context.stats.dangerousAttacksAway}\n` : ""}${context.stats.cornersHome + context.stats.cornersAway >= 8 ? `✅ Escanteios: ${context.stats.cornersHome + context.stats.cornersAway}\n` : ""}\n**Pressure Index:** ${context.pressureIndex.pressureIndex.toFixed(0)}/100\n\n**Conclusão:** ${isPressaoReal ? "Pressão genuína com alto risco de gol" : "Pressão estéril - posse sem penetração"}`
-  }
-  
-  // 🔥 ESCANTEIO PROVÁVEL
-  if (lowerQuery.includes("escanteio")) {
-    const totalCorners = context.stats.cornersHome + context.stats.cornersAway
-    const maisEscanteios = context.stats.cornersAway > context.stats.cornersHome ? context.awayTeam : context.homeTeam
-    const probabilidade = Math.min(85, 50 + totalCorners * 3 + (context.pressureIndex.pressureIndex - 50) * 0.5)
-    
-    return `🔥 **ESCANTEIO PROVÁVEL**\n\n**Time:** ${maisEscanteios}\n\n**Análise:**\n• Escanteios já: ${totalCorners} (${context.stats.cornersHome} casa / ${context.stats.cornersAway} fora)\n• Ataques perigosos: ${maisEscanteios === context.awayTeam ? context.stats.dangerousAttacksAway : context.stats.dangerousAttacksHome}\n• Pressure Index: ${context.pressureIndex.pressureIndex.toFixed(0)}/100\n• Momentum: ${context.momentum.last5min.toFixed(0)}/100\n\n**Probabilidade:** ${probabilidade.toFixed(0)}% nos próximos 5 minutos\n**Flanco forte:** ${context.stats.possessionAway > 55 ? "Visitante dominando laterais" : "Casa pressionando flancos"}`
-  }
-  
-  // 🧱 SINAIS CONTRADITÓRIOS
-  if (lowerQuery.includes("contraditórios") || lowerQuery.includes("sinais")) {
-    const proHA = []
-    const contraHA = []
-    
-    if (context.rdsFora >= 70) proHA.push(`✅ RDS Fora: ${context.rdsFora.toFixed(1)}/100`)
-    if (context.momentum.trend === "crescendo") proHA.push("✅ Momentum: Crescendo")
-    if (context.htToFtCoherence === "ROTEIRO CONFIRMADO") proHA.push("✅ Roteiro confirmado")
-    if (context.xgAway >= 1.2) proHA.push(`✅ xG competitivo: ${context.xgAway.toFixed(2)}`)
-    if (context.greenLightActive) proHA.push("✅ Green Light ativo")
-    
-    if (context.pressureIndex.pressureIndex >= 65) contraHA.push(`⚠️ Pressure Index casa: ${context.pressureIndex.pressureIndex.toFixed(0)}/100`)
-    if (context.shadowXG >= 0.35) contraHA.push(`⚠️ Shadow xG casa: ${context.shadowXG.toFixed(2)}`)
-    if (context.minute >= 75) contraHA.push(`⚠️ Minuto avançado: ${context.minute}'`)
-    if (context.timeBombActive) contraHA.push("⚠️ Time Bomb ativa")
-    if (context.deadZoneActive) contraHA.push("🔴 Dead Zone ativa")
-    
-    const balanco = proHA.length > contraHA.length ? "PRÓ HA+ favorável" : 
-                    proHA.length < contraHA.length ? "CONTRA HA+ dominante" : 
-                    "NEUTRO - sinais equilibrados"
-    
-    return `🧱 **SINAIS CONTRADITÓRIOS**\n\n**PRÓ HA+:**\n${proHA.join("\n") || "Nenhum sinal forte"}\n\n**CONTRA HA+:**\n${contraHA.join("\n") || "Nenhum sinal forte"}\n\n**Balanço:** ${balanco}\n**Confiança:** ${context.confidence.toFixed(1)}%`
-  }
-  
-  // ⏮️ REPLAY TÁTICO
-  if (lowerQuery.includes("replay") || lowerQuery.includes("mudou")) {
-    return `⏮️ **REPLAY TÁTICO - Últimos 5 Minutos**\n\n**Mudanças Detectadas:**\n\n📊 **Estatísticas:**\n• Finalizações: ${context.stats.shotsTotalHome} (casa) / ${context.stats.shotsTotalAway} (fora)\n• No alvo: ${context.stats.shotsOnTargetHome} (casa) / ${context.stats.shotsOnTargetAway} (fora)\n• Posse: ${context.stats.possessionHome}% (casa) / ${context.stats.possessionAway}% (fora)\n\n⚡ **Momentum:**\n• Atual: ${context.momentum.last5min.toFixed(0)}/100\n• Tendência: ${context.momentum.trend.toUpperCase()}\n\n🎯 **Impacto:**\n${context.momentum.trend === "crescendo" ? "Visitante acelerou significativamente. Pressão real aumentou." : context.momentum.trend === "caindo" ? "Visitante perdeu intensidade. Favorito retomou controle." : "Jogo mantém equilíbrio. Cenário estável."}\n\n**Pattern Break:** ${context.patternBreak.toUpperCase()}`
-  }
-  
-  // ⚡ JOGO ACELERANDO OU MORRENDO
-  if (lowerQuery.includes("acelerando") || lowerQuery.includes("morrendo") || lowerQuery.includes("ritmo")) {
-    const status = context.deadGameDetected ? "MORRENDO" : 
-                   context.riskMapType === "explosive" ? "ACELERANDO" :
-                   context.momentum.trend === "crescendo" ? "ACELERANDO" :
-                   context.momentum.trend === "caindo" ? "DESACELERANDO" : "ESTÁVEL"
-    
-    return `⚡ **RITMO DO JOGO**\n\n**Status:** ${status}\n\n**Indicadores:**\n• Risk Map: ${context.riskMapType.toUpperCase()}\n• Momentum: ${context.momentum.last5min.toFixed(0)}/100 (${context.momentum.trend})\n• Dead Game: ${context.deadGameDetected ? "DETECTADO ⚠️" : "Não"}\n• Finalizações totais: ${context.stats.shotsTotalHome + context.stats.shotsTotalAway}\n• Ataques perigosos: ${context.stats.dangerousAttacksHome + context.stats.dangerousAttacksAway}\n\n**Tendência:** ${status === "ACELERANDO" ? "Jogo caminha para final explosivo" : status === "MORRENDO" ? "Jogo travado - poucos eventos esperados" : "Ritmo controlado"}`
-  }
-  
-  // 🎮 QUEM DOMINA
-  if (lowerQuery.includes("domina") || lowerQuery.includes("controle")) {
-    const dominante = context.rdsFora > context.rdsCasa ? context.awayTeam : context.homeTeam
-    const rdsVencedor = Math.max(context.rdsFora, context.rdsCasa)
-    
-    return `🎮 **CONTROLE DO RITMO**\n\n**Dominante:** ${dominante}\n\n**Métricas:**\n• RDS: ${context.rdsCasa.toFixed(1)} (casa) / ${context.rdsFora.toFixed(1)} (fora)\n• Posse: ${context.stats.possessionHome}% (casa) / ${context.stats.possessionAway}% (fora)\n• xG: ${context.xgHome.toFixed(2)} (casa) / ${context.xgAway.toFixed(2)} (fora)\n• Finalizações: ${context.stats.shotsTotalHome} (casa) / ${context.stats.shotsTotalAway} (fora)\n\n**Conclusão:** ${dominante} dita o ritmo do jogo (RDS ${rdsVencedor.toFixed(1)}/100)`
-  }
-  
-  // 💰 ODD JUSTA OU ERRADA
-  if (lowerQuery.includes("odd")) {
-    const evAbs = Math.abs(context.ev)
-    const discrepancia = evAbs > 8
-    
-    return `💰 **ANÁLISE DE MERCADO**\n\n**Odd Live:** ${context.haOdd.toFixed(2)}\n**Linha:** ${context.haLine}\n\n**EV:** ${context.ev.toFixed(2)}%\n**Discrepância:** ${discrepancia ? `SIM (${evAbs.toFixed(1)}%)` : `NÃO (${evAbs.toFixed(1)}%)`}\n\n**Diagnóstico:** ${discrepancia ? "MERCADO ATRASADO ⚠️" : "MERCADO ALINHADO ✅"}\n\n**Motivo:** ${discrepancia ? "Odds não refletem mudanças recentes de momentum/pressão. True Value detectado." : "Odds refletem corretamente o estado atual do jogo."}\n\n**OPC Status:** ${context.opcStatus}\n${context.opcMessage}`
-  }
-  
-  // 🛡️ VIRADA POTENCIAL
-  if (lowerQuery.includes("virada") || lowerQuery.includes("virar")) {
-    const [homeScore, awayScore] = context.score.split("-").map(Number)
-    const scoreDiff = homeScore - awayScore
-    const viradaPossivel = scoreDiff <= 1 && context.momentum.trend === "crescendo" && context.rdsFora >= 65
-    
-    return `🔄 **VIRADA POTENCIAL**\n\n**Placar:** ${context.score}\n**Diferença:** ${Math.abs(scoreDiff)} gol(s)\n\n**Análise:**\n• Momentum visitante: ${context.momentum.last5min.toFixed(0)}/100 (${context.momentum.trend})\n• RDS Fora: ${context.rdsFora.toFixed(1)}/100\n• xG Fora: ${context.xgAway.toFixed(2)}\n• Pressure Index: ${context.pressureIndex.pressureIndex.toFixed(0)}/100\n\n**Risco de Virada:** ${viradaPossivel ? "ALTO 🔴" : scoreDiff === 0 ? "N/A (empate)" : "BAIXO 🟢"}\n\n**Motivo:** ${viradaPossivel ? "Visitante crescendo + RDS alto + Momentum positivo" : "Favorito mantém controle ou visitante sem força"}`
-  }
-  
-  // 🏁 FIM EXPLOSIVO
-  if (lowerQuery.includes("fim") || lowerQuery.includes("final")) {
-    const fimExplosivo = context.minute >= 75 && (
-      context.momentum.trend === "crescendo" || 
-      context.timeBombActive || 
-      context.riskMapType === "explosive"
-    )
-    
-    return `🏁 **FIM EXPLOSIVO**\n\n**Minuto:** ${context.minute}'\n\n**Análise:**\n• Momentum: ${context.momentum.last5min.toFixed(0)}/100 (${context.momentum.trend})\n• Time Bomb: ${context.timeBombActive ? "ATIVA 💣" : "Inativa"}\n• Risk Map: ${context.riskMapType.toUpperCase()}\n• Shadow xG: ${context.shadowXG.toFixed(2)}\n\n**Previsão:** ${fimExplosivo ? "FIM EXPLOSIVO PROVÁVEL 🔥" : "FIM CONTROLADO ✅"}\n\n**Expectativa:** ${fimExplosivo ? "Múltiplos eventos nos minutos finais (gols, cartões, pressão extrema)" : "Jogo caminha para final sem grandes emoções"}`
-  }
-  
-  // 🔍 BURACOS DEFENSIVOS
-  if (lowerQuery.includes("buraco") || lowerQuery.includes("defensivo")) {
-    const buracoCasa = context.stats.shotsOnTargetAway >= 5 && context.xgAway >= 1.5
-    const buracoFora = context.stats.shotsOnTargetHome >= 5 && context.xgHome >= 1.5
-    
-    return `🔍 **BURACOS DEFENSIVOS**\n\n**Casa (${context.homeTeam}):**\n${buracoCasa ? "⚠️ VULNERÁVEL" : "✅ SÓLIDO"}\n• Finalizações sofridas: ${context.stats.shotsOnTargetAway}\n• xG contra: ${context.xgAway.toFixed(2)}\n\n**Fora (${context.awayTeam}):**\n${buracoFora ? "⚠️ VULNERÁVEL" : "✅ SÓLIDO"}\n• Finalizações sofridas: ${context.stats.shotsOnTargetHome}\n• xG contra: ${context.xgHome.toFixed(2)}\n\n**Conclusão:** ${buracoCasa && buracoFora ? "Ambas defesas vulneráveis - jogo aberto" : buracoCasa ? "Casa vulnerável - visitante pode explorar" : buracoFora ? "Visitante vulnerável - casa pode explorar" : "Ambas defesas sólidas"}`
-  }
-  
-  // 📊 COMPARAÇÃO 1T→2T
-  if (lowerQuery.includes("1t") || lowerQuery.includes("2t") || lowerQuery.includes("comparação")) {
-    return `📊 **COMPARAÇÃO 1T → 2T**\n\n**Coerência HT→FT:** ${context.htToFtCoherence || "N/A"}\n\n**Evolução:**\n• RDS Casa: ${context.rdsCasa.toFixed(1)}/100\n• RDS Fora: ${context.rdsFora.toFixed(1)}/100\n• Momentum: ${context.momentum.trend.toUpperCase()}\n• Pattern Break: ${context.patternBreak.toUpperCase()}\n\n**Interpretação:**\n${context.htToFtCoherence === "ROTEIRO CONFIRMADO" ? "✅ Jogo seguindo script do 1T - cenário previsível" : context.htToFtCoherence === "ROTEIRO ROMPIDO" ? "⚠️ Jogo mudou completamente - revisar estratégia" : "⚪ Sem dados do 1T para comparar"}\n\n**Mirror Check:** ${context.mirrorCheckActive ? `ATIVO ✅\n${context.mirrorCheckArchetype}` : "Inativo"}`
+    return `🔮 **ORÁCULO PRO+ - Previsão Completa**
+
+**Cenário:** ${context.homeTeam} ${context.score} ${context.awayTeam} (${context.minute}')
+
+**GPS DO JOGO:**
+• Fase: ${gps.fase.toUpperCase()}
+• Tendência: ${gps.tendencia.toUpperCase()}
+
+**CHAOS METER:** ${chaosMeter.toFixed(0)}/100
+${chaosMeter <= 25 ? "🟢 Jogo morto" : chaosMeter <= 55 ? "🟡 Controle" : chaosMeter <= 75 ? "🟠 Pressão real" : "🔴 Caos / Gol iminente"}
+
+**Caminhos Prováveis:**
+• Gol M: ${gps.caminhos.golM.toFixed(0)}%
+• Gol V: ${gps.caminhos.golV.toFixed(0)}%
+• Cartão: ${gps.caminhos.cartao.toFixed(0)}%
+• Escanteio: ${gps.caminhos.escanteio.toFixed(0)}% (confiança ${gps.confiancaEscanteio})
+
+**Eventos Futuros:**
+${context.timeBombActive ? "💣 Time Bomb ativa - gol iminente\n" : ""}${context.shadowXG >= 0.4 ? "⚠️ Shadow xG alto - explosão provável\n" : ""}${context.momentum.trend === "crescendo" ? "📈 Momentum crescente - aceleração\n" : ""}${context.riskMapType === "dead" ? "🧊 Dead Game - jogo travado\n" : ""}
+
+**Diagnóstico Final:**
+${chaosMeter >= 76 ? "Jogo em CAOS TOTAL - múltiplos eventos esperados" : chaosMeter >= 56 ? "Pressão REAL detectada - risco alto" : chaosMeter >= 26 ? "Jogo CONTROLADO - cenário estável" : "Jogo MORTO - poucos eventos esperados"}`
   }
   
   // Resposta genérica para perguntas não mapeadas
-  return `🤖 **Assistente Tático Pro**\n\n"${query}"\n\nAnalisando dados do GODMODE 4.0...\n\n**Contexto Atual:**\n• Jogo: ${context.homeTeam} ${context.score} ${context.awayTeam}\n• Minuto: ${context.minute}'\n• AggroLevel: ${context.aggroLevel} (${context.aggroLevelName})\n• Confiança: ${context.confidence.toFixed(1)}%\n• EV: ${context.ev.toFixed(2)}%\n\n**Status GODMODE:**\n• Green Light: ${context.greenLightActive ? "🟢 ATIVO" : "⚪ Inativo"}\n• Dead Zone: ${context.deadZoneActive ? "🔴 ATIVA" : "⚪ Inativa"}\n• Score Shield: ${context.scoreShieldActive ? "🛡️ ATIVO" : "⚪ Inativo"}\n• Time Bomb: ${context.timeBombActive ? "💣 ATIVA" : "⚪ Inativa"}\n\n**Perguntas sugeridas:**\n• "Vai sair gol?"\n• "Pressão real ou falsa?"\n• "Quem marca o próximo gol?"\n• "O jogo está acelerando?"\n• "Existe risco de virada?"`
+  return `🤖 **Assistente Tático Pro**
+
+"${query}"
+
+Analisando dados do GODMODE 4.0...
+
+**Contexto Atual:**
+• Jogo: ${context.homeTeam} ${context.score} ${context.awayTeam}
+• Minuto: ${context.minute}'
+• AggroLevel: ${context.aggroLevel} (${context.aggroLevelName})
+• Confiança: ${context.confidence?.toFixed(1) || "N/A"}%
+• EV: ${context.ev.toFixed(2)}%
+
+**Status GODMODE:**
+• Green Light: ${context.greenLightActive ? "🟢 ATIVO" : "⚪ Inativo"}
+• Dead Zone: ${context.deadZoneActive ? "🔴 ATIVA" : "⚪ Inativa"}
+• Score Shield: ${context.scoreShieldActive ? "🛡️ ATIVO" : "⚪ Inativo"}
+• Time Bomb: ${context.timeBombActive ? "💣 ATIVA" : "⚪ Inativa"}
+
+**Perguntas sugeridas:**
+• "Vai sair gol?"
+• "Pressão real ou falsa?"
+• "Quem marca o próximo gol?"
+• "O jogo está acelerando?"
+• "Análise HA+ linha +1.0"
+• "Existe risco de virada?"`
+}
+
+// ==================== FALLBACK INTELIGENTE ====================
+
+function generateFallbackResponse(): string {
+  return `❓ **Não consegui entender exatamente sua pergunta.**
+
+Escolha uma das opções abaixo:
+
+**🟡 GOLS:**
+• Próximo Gol
+• Vai sair gol?
+• % gol nos próximos 5 min
+
+**🟠 CARTÕES:**
+• Próximo cartão
+• Quem está mais perto de levar?
+• Risco disciplinar
+
+**🟦 ESCANTEIOS:**
+• Chance de escanteio agora
+• Pressão lateral
+• Microritmo de corners
+
+**🟣 TENDÊNCIA:**
+• Jogo vai morrer?
+• Jogo vai explodir?
+• Pressão real vs falsa
+
+**🟢 VIRADA/EMPATE:**
+• Chance de virada
+• Chance de empate
+• Quem controla o jogo
+
+**🔱 GPS DO JOGO:**
+• GPS completo
+• Previsão completa
+
+**🛡️ HA+ LIVE:**
+• Análise HA+ linha +1.0
+• Regime HA+ atual`
 }
 
 // ==================== COMPONENTE PRINCIPAL ====================
@@ -302,6 +735,9 @@ export default function ChatPage() {
   const [isTyping, setIsTyping] = useState(false)
   const [gameContext, setGameContext] = useState<GodmodeAnalysisData | null>(null)
   const [isBlocked, setIsBlocked] = useState(true)
+  const [activeCategory, setActiveCategory] = useState<string | null>(null)
+  const [autoAlerts, setAutoAlerts] = useState<string[]>([])
+  const [autoSuggestions, setAutoSuggestions] = useState<string[]>([])
   const scrollRef = useRef<HTMLDivElement>(null)
 
   // Carregar análise ao montar componente
@@ -313,15 +749,67 @@ export default function ChatPage() {
           setGameContext(data)
           setIsBlocked(false)
           
+          // Gerar alertas automáticos
+          const alerts = detectAutoAlerts(data)
+          setAutoAlerts(alerts)
+          
+          // Gerar auto-sugestões
+          const suggestions = generateAutoSuggestions(data)
+          setAutoSuggestions(suggestions)
+          
           // Mensagem de boas-vindas
+          const chaosMeter = calculateChaosMeter(data)
+          const gps = calculateGPS(data)
+          
           setMessages([
             {
               id: "welcome",
               role: "assistant",
-              content: `👋 **Bem-vindo ao Assistente Tático Pro!**\n\n📊 **Análise carregada:**\n${data.homeTeam} ${data.score} ${data.awayTeam} — ${data.minute}'\n\n**O que posso fazer:**\n• Analisar momentum e pressão em tempo real\n• Prever próximos eventos (gols, cartões, escanteios)\n• Explicar movimentos de mercado e odds\n• Detectar padrões táticos e emocionais\n• Avaliar riscos e oportunidades\n\n**30 Módulos Ativos:**\n✅ 10 Módulos Avançados\n✅ 20 Módulos Ultra-Elite\n\n**Como usar:**\nEscolha um atalho rápido ou faça sua pergunta!`,
+              content: `👋 **Bem-vindo ao Assistente Tático Pro!**
+
+📊 **Análise carregada:**
+${data.homeTeam} ${data.score} ${data.awayTeam} — ${data.minute}'
+
+**GPS DO JOGO:**
+• Fase: ${gps.fase.toUpperCase()}
+• Tendência: ${gps.tendencia.toUpperCase()}
+
+**CHAOS METER:** ${chaosMeter.toFixed(0)}/100
+${chaosMeter >= 76 ? "🔴 Caos / Gol iminente" : chaosMeter >= 56 ? "🟠 Pressão real" : chaosMeter >= 26 ? "🟡 Controle" : "🟢 Jogo morto"}
+
+**O que posso fazer:**
+• Analisar momentum e pressão em tempo real
+• Prever próximos eventos (gols, cartões, escanteios)
+• Explicar movimentos de mercado e odds
+• Detectar padrões táticos e emocionais
+• Avaliar riscos e oportunidades
+• **🛡️ Análise HA+ LIVE com Regimes e Filtros**
+
+**30 Módulos Ativos + HA+ Shield:**
+✅ 10 Módulos Avançados
+✅ 20 Módulos Ultra-Elite
+✅ HA+ Shield Factor (LIVE)
+✅ Regimes A/B/C (LIVE)
+✅ Filtros Anti-Ilusão (LIVE)
+
+**Como usar:**
+Escolha um atalho rápido ou faça sua pergunta!
+Experimente: "Análise HA+ linha +1.0"`,
               timestamp: new Date()
             }
           ])
+          
+          // Adicionar alertas automáticos se houver
+          if (alerts.length > 0) {
+            setTimeout(() => {
+              setMessages(prev => [...prev, {
+                id: "auto-alerts",
+                role: "system",
+                content: `🚨 **ORÁCULO PRO+ - Alertas Automáticos**\n\n${alerts.join("\n")}\n\n_Esses alertas são leituras táticas, não sinais de entrada._`,
+                timestamp: new Date()
+              }])
+            }, 1500)
+          }
         }
       } else {
         setIsBlocked(true)
@@ -329,6 +817,27 @@ export default function ChatPage() {
     }
     
     loadAnalysis()
+    
+    // Auto-monitoramento a cada 60 segundos
+    const interval = setInterval(() => {
+      if (gameContext) {
+        const alerts = detectAutoAlerts(gameContext)
+        if (alerts.length > 0 && alerts.join() !== autoAlerts.join()) {
+          setAutoAlerts(alerts)
+          setMessages(prev => [...prev, {
+            id: `auto-alert-${Date.now()}`,
+            role: "system",
+            content: `🚨 **ORÁCULO PRO+ - Novo Alerta**\n\n${alerts[alerts.length - 1]}`,
+            timestamp: new Date()
+          }])
+        }
+        
+        const suggestions = generateAutoSuggestions(gameContext)
+        setAutoSuggestions(suggestions)
+      }
+    }, 60000)
+    
+    return () => clearInterval(interval)
   }, [])
 
   useEffect(() => {
@@ -338,7 +847,30 @@ export default function ChatPage() {
   }, [messages])
 
   const handleSend = (text?: string) => {
-    if (!gameContext) return
+    if (!gameContext) {
+      // Resposta automática quando não há análise
+      const userMessage: Message = {
+        id: Date.now().toString(),
+        role: "user",
+        content: text || input.trim(),
+        timestamp: new Date()
+      }
+      
+      setMessages(prev => [...prev, userMessage])
+      setInput("")
+      setIsTyping(true)
+      
+      setTimeout(() => {
+        setMessages(prev => [...prev, {
+          id: (Date.now() + 1).toString(),
+          role: "assistant",
+          content: "⚠️ Nenhuma análise ativa. Rode o GODMODE 4.0 antes de usar o Assistente.",
+          timestamp: new Date()
+        }])
+        setIsTyping(false)
+      }, 500)
+      return
+    }
     
     const messageText = text || input.trim()
     if (!messageText) return
@@ -356,7 +888,26 @@ export default function ChatPage() {
 
     // Gerar resposta do assistente
     setTimeout(() => {
-      const response = generateTacticalResponse(messageText, gameContext)
+      let response: string
+      
+      // Verificar se é pergunta válida
+      const lowerQuery = messageText.toLowerCase()
+      const validKeywords = [
+        "gol", "cartão", "escanteio", "pressão", "virada", "empate", "morrer", "explodir",
+        "ritmo", "controla", "underdog", "odd", "buraco", "1t", "2t", "oráculo", "mentor",
+        "risco", "replay", "sinais", "gps", "panorama", "resumo", "previsão", "caminhos",
+        "eventos", "diagnóstico", "disciplinar", "heatmap", "lateral", "microritmo", "sequência",
+        "ha+", "handicap", "asiático", "linha", "regime"
+      ]
+      
+      const isValidQuery = validKeywords.some(keyword => lowerQuery.includes(keyword))
+      
+      if (isValidQuery) {
+        response = generateTacticalResponse(messageText, gameContext)
+      } else {
+        response = generateFallbackResponse()
+      }
+      
       const assistantMessage: Message = {
         id: (Date.now() + 1).toString(),
         role: "assistant",
@@ -368,18 +919,8 @@ export default function ChatPage() {
     }, 800)
   }
 
-  const handleQuickAction = (actionId: string) => {
-    const actionLabels: Record<string, string> = {
-      "oraculo": "🔮 Oráculo - Vai sair gol?",
-      "mentor-risco": "🧠 Mentor de Risco - Qual o nível de risco?",
-      "proximo-gol": "🎯 Quem marca o próximo gol?",
-      "proximo-cartao": "⚠️ Quem leva o próximo cartão?",
-      "pressao-real": "📈 Pressão real ou falsa?",
-      "escanteio-provavel": "🔥 Escanteio provável?",
-      "sinais-contradictorios": "🧱 Mostre sinais contraditórios",
-      "replay-tatico": "⏮️ O que mudou nos últimos 5 minutos?"
-    }
-    handleSend(actionLabels[actionId] || actionId)
+  const handleQuickAction = (actionId: string, label: string) => {
+    handleSend(label)
   }
 
   const handleClearGame = () => {
@@ -387,13 +928,15 @@ export default function ChatPage() {
     setGameContext(null)
     setIsBlocked(true)
     setMessages([])
+    setAutoAlerts([])
+    setAutoSuggestions([])
   }
 
   // Tela de bloqueio
   if (isBlocked || !gameContext) {
     return (
       <div className="min-h-screen bg-gradient-to-br from-slate-950 via-slate-900 to-slate-950 text-slate-100 flex items-center justify-center p-4">
-        <Card className="bg-slate-900/60 border-slate-800 max-w-2xl w-full">
+        <Card className="bg-slate-900/60 backdrop-blur-sm border-slate-800 max-w-2xl w-full">
           <CardHeader>
             <CardTitle className="flex items-center gap-2 text-2xl">
               <Lock className="w-6 h-6 text-red-400" />
@@ -439,46 +982,71 @@ export default function ChatPage() {
     )
   }
 
+  const chaosMeter = calculateChaosMeter(gameContext)
+
   return (
-    <div className="min-h-screen bg-gradient-to-br from-slate-950 via-slate-900 to-slate-950 text-slate-100">
-      <div className="container mx-auto px-4 py-6 max-w-5xl h-screen flex flex-col">
-        {/* Header */}
-        <Card className="bg-slate-900/60 border-slate-800 mb-4">
+    <div className="min-h-screen bg-gradient-to-br from-[#0B0D14] via-[#141A26] to-[#0B0D14] text-[#E6EAF0]">
+      <div className="container mx-auto px-4 py-6 max-w-6xl h-screen flex flex-col gap-4">
+        {/* Header com HUD Completo - DARK MODE PREMIUM */}
+        <Card className="bg-[rgba(255,255,255,0.06)] backdrop-blur-[14px] border-[rgba(255,255,255,0.12)] border-2">
           <CardHeader className="pb-3">
-            <div className="flex items-center justify-between">
+            <div className="flex items-center justify-between flex-wrap gap-4">
               <div className="flex items-center gap-3">
                 <Button
                   variant="ghost"
                   size="sm"
                   onClick={() => router.push("/")}
-                  className="text-slate-400 hover:text-slate-100"
+                  className="text-[#9FB4D1] hover:text-[#E6EAF0]"
                 >
                   <ArrowLeft className="w-4 h-4" />
                 </Button>
-                <CardTitle className="flex items-center gap-2 text-xl">
-                  <Brain className="w-6 h-6 text-cyan-400" />
+                <CardTitle className="flex items-center gap-2 text-[1.2rem] font-semibold text-[#4D9EF7]">
+                  <Brain className="w-6 h-6 text-[#4D9EF7]" />
                   Assistente Tático Pro
                 </CardTitle>
               </div>
-              <div className="flex items-center gap-3">
-                <Badge variant="outline" className="text-xs">
+              
+              {/* HUD Completo */}
+              <div className="flex items-center gap-2 flex-wrap">
+                <Badge variant="outline" className="text-xs font-mono text-[#E6EAF0] border-[rgba(77,158,247,0.25)]">
                   {gameContext.homeTeam} {gameContext.score} {gameContext.awayTeam}
                 </Badge>
-                <Badge variant="secondary" className="text-xs">
+                <Badge variant="secondary" className="text-xs text-[#9FB4D1]">
                   {gameContext.minute}'
                 </Badge>
                 <Badge variant={
                   gameContext.aggroLevel === 0 ? "secondary" :
                   gameContext.aggroLevel === 1 ? "outline" :
                   gameContext.aggroLevel === 2 ? "default" : "destructive"
-                }>
+                } className="text-[#E6EAF0]">
                   Aggro {gameContext.aggroLevel}
+                </Badge>
+                <Badge variant="outline" className="text-xs text-[#9FB4D1] border-[rgba(77,158,247,0.25)]">
+                  Pressão {gameContext.pressureIndex.pressureIndex.toFixed(0)}
+                </Badge>
+                <Badge variant="outline" className="text-xs text-[#9FB4D1] border-[rgba(77,158,247,0.25)]">
+                  Mom {gameContext.momentum.last5min.toFixed(0)}
+                </Badge>
+                <Badge variant="outline" className="text-xs text-[#9FB4D1] border-[rgba(77,158,247,0.25)]">
+                  sXG {gameContext.shadowXG.toFixed(2)}
+                </Badge>
+                {gameContext.timeBombActive && (
+                  <Badge variant="destructive" className="text-xs animate-pulse">
+                    💣 Bomb
+                  </Badge>
+                )}
+                <Badge variant={
+                  gameContext.riskMapType === "explosive" ? "destructive" :
+                  gameContext.riskMapType === "chaotic" ? "default" :
+                  gameContext.riskMapType === "dead" ? "secondary" : "outline"
+                } className="text-xs text-[#E6EAF0]">
+                  {gameContext.riskMapType}
                 </Badge>
                 {gameContext.confidence != null && (
                   <Badge variant={
                     gameContext.confidence >= 70 ? "default" :
                     gameContext.confidence >= 50 ? "outline" : "destructive"
-                  }>
+                  } className="text-[#E6EAF0]">
                     {gameContext.confidence.toFixed(0)}%
                   </Badge>
                 )}
@@ -486,21 +1054,61 @@ export default function ChatPage() {
                   variant="ghost"
                   size="sm"
                   onClick={handleClearGame}
-                  className="text-slate-400 hover:text-red-400"
+                  className="text-[#9FB4D1] hover:text-red-400"
                   title="Trocar Jogo Analisado"
                 >
                   <RefreshCw className="w-4 h-4" />
                 </Button>
               </div>
             </div>
+            
+            {/* Chaos Meter Bar */}
+            <div className="mt-4 space-y-2">
+              <div className="flex items-center justify-between text-xs">
+                <span className="text-[#9FB4D1]">Chaos Meter™</span>
+                <span className={`font-bold ${
+                  chaosMeter >= 76 ? "text-red-400" :
+                  chaosMeter >= 56 ? "text-orange-400" :
+                  chaosMeter >= 26 ? "text-yellow-400" : "text-green-400"
+                }`}>
+                  {chaosMeter.toFixed(0)}/100 {
+                    chaosMeter >= 76 ? "🔴 Caos / Gol iminente" :
+                    chaosMeter >= 56 ? "🟠 Pressão real" :
+                    chaosMeter >= 26 ? "🟡 Controle" : "🟢 Jogo morto"
+                  }
+                </span>
+              </div>
+              <Progress 
+                value={chaosMeter} 
+                className={`h-2 ${
+                  chaosMeter >= 76 ? "bg-red-950" :
+                  chaosMeter >= 56 ? "bg-orange-950" :
+                  chaosMeter >= 26 ? "bg-yellow-950" : "bg-green-950"
+                }`}
+              />
+            </div>
           </CardHeader>
         </Card>
 
-        {/* Chat Area */}
-        <Card className="bg-slate-900/60 border-slate-800 flex-1 flex flex-col overflow-hidden">
+        {/* Auto-Sugestões */}
+        {autoSuggestions.length > 0 && (
+          <Card className="bg-cyan-900/20 backdrop-blur-sm border-cyan-500/30">
+            <CardContent className="p-3">
+              <div className="space-y-1">
+                <p className="text-xs text-cyan-300 font-semibold">💡 Auto-Sugestões Inteligentes:</p>
+                {autoSuggestions.map((suggestion, idx) => (
+                  <p key={idx} className="text-xs text-cyan-200">{suggestion}</p>
+                ))}
+              </div>
+            </CardContent>
+          </Card>
+        )}
+
+        {/* Chat Area - DARK MODE PREMIUM */}
+        <Card className="bg-[rgba(255,255,255,0.06)] backdrop-blur-[14px] border-[rgba(255,255,255,0.12)] flex-1 flex flex-col overflow-hidden">
           <CardContent className="flex-1 flex flex-col p-4 gap-4 overflow-hidden">
-            {/* Messages */}
-            <ScrollArea className="flex-1 pr-4" ref={scrollRef}>
+            {/* Messages - com padding-bottom para não esconder atrás do input */}
+            <ScrollArea className="flex-1 pr-4 pb-4" ref={scrollRef}>
               <div className="space-y-4">
                 {messages.map((message) => (
                   <div
@@ -508,17 +1116,20 @@ export default function ChatPage() {
                     className={`flex ${message.role === "user" ? "justify-end" : "justify-start"} animate-in fade-in slide-in-from-bottom-2 duration-300`}
                   >
                     <div
-                      className={`max-w-[85%] rounded-2xl px-4 py-3 ${
+                      className={`max-w-[85%] rounded-xl px-4 py-3 ${
                         message.role === "user"
-                          ? "bg-cyan-600 text-white"
-                          : "bg-slate-800 text-slate-100"
+                          ? "bg-[#4D9EF7] text-white"
+                          : message.role === "system"
+                          ? "bg-orange-900/30 border border-orange-500/30 text-orange-100"
+                          : "bg-[#1E2433] text-[#DDE6F3] border border-[rgba(77,158,247,0.2)]"
                       }`}
                     >
                       <div className="whitespace-pre-line text-sm leading-relaxed">
                         {message.content}
                       </div>
                       <div className={`text-xs mt-2 ${
-                        message.role === "user" ? "text-cyan-100" : "text-slate-400"
+                        message.role === "user" ? "text-cyan-100" : 
+                        message.role === "system" ? "text-orange-300" : "text-[#9FB4D1]"
                       }`}>
                         {message.timestamp.toLocaleTimeString("pt-BR", { 
                           hour: "2-digit", 
@@ -531,11 +1142,11 @@ export default function ChatPage() {
                 
                 {isTyping && (
                   <div className="flex justify-start animate-in fade-in duration-300">
-                    <div className="bg-slate-800 rounded-2xl px-4 py-3">
+                    <div className="bg-[#1E2433] rounded-xl px-4 py-3">
                       <div className="flex gap-1">
-                        <div className="w-2 h-2 bg-slate-400 rounded-full animate-bounce" style={{ animationDelay: "0ms" }} />
-                        <div className="w-2 h-2 bg-slate-400 rounded-full animate-bounce" style={{ animationDelay: "150ms" }} />
-                        <div className="w-2 h-2 bg-slate-400 rounded-full animate-bounce" style={{ animationDelay: "300ms" }} />
+                        <div className="w-2 h-2 bg-[#9FB4D1] rounded-full animate-bounce" style={{ animationDelay: "0ms" }} />
+                        <div className="w-2 h-2 bg-[#9FB4D1] rounded-full animate-bounce" style={{ animationDelay: "150ms" }} />
+                        <div className="w-2 h-2 bg-[#9FB4D1] rounded-full animate-bounce" style={{ animationDelay: "300ms" }} />
                       </div>
                     </div>
                   </div>
@@ -543,49 +1154,131 @@ export default function ChatPage() {
               </div>
             </ScrollArea>
 
-            {/* Quick Actions */}
-            <div className="flex flex-wrap gap-2 py-2 border-t border-slate-700">
-              {QUICK_ACTIONS.map((action) => {
-                const Icon = action.icon
+            {/* Quick Replies - SUGESTÕES RÁPIDAS */}
+            <div className="flex flex-wrap gap-2 py-2 border-t border-[rgba(77,158,247,0.2)]">
+              {QUICK_REPLIES.map((reply) => {
+                const Icon = reply.icon
                 return (
                   <Button
-                    key={action.id}
+                    key={reply.id}
                     variant="outline"
                     size="sm"
-                    onClick={() => handleQuickAction(action.id)}
-                    className="bg-slate-800 border-slate-700 hover:bg-slate-700 hover:border-cyan-500 transition-all hover:scale-105"
+                    onClick={() => handleQuickAction(reply.id, reply.label)}
+                    className="bg-[#2B3447] border-[rgba(77,158,247,0.25)] hover:bg-[#36425A] hover:border-[#4D9EF7] transition-all hover:scale-105 text-xs text-[#DDE6F3]"
                   >
-                    <Icon className="w-4 h-4 mr-1" />
-                    {action.label}
+                    <Icon className="w-3 h-3 mr-1 text-[#4D9EF7]" />
+                    {reply.label}
                   </Button>
                 )
               })}
             </div>
 
-            {/* Input */}
-            <div className="flex gap-2">
-              <Input
-                value={input}
-                onChange={(e) => setInput(e.target.value)}
-                onKeyPress={(e) => e.key === "Enter" && !e.shiftKey && handleSend()}
-                placeholder="Faça sua pergunta tática..."
-                className="bg-slate-800 border-slate-700 text-white placeholder:text-slate-400 focus:border-cyan-500 transition-colors"
-              />
-              <Button
-                onClick={() => handleSend()}
-                disabled={!input.trim() || isTyping}
-                className="bg-cyan-600 hover:bg-cyan-700 transition-all hover:scale-105"
-              >
-                <Send className="w-4 h-4" />
-              </Button>
+            {/* Atalhos Táticos em 6 Categorias */}
+            <div className="space-y-3 py-2 border-t border-[rgba(77,158,247,0.2)]">
+              <div className="flex items-center gap-2 flex-wrap">
+                <Button
+                  variant={activeCategory === "gols" ? "default" : "outline"}
+                  size="sm"
+                  onClick={() => setActiveCategory(activeCategory === "gols" ? null : "gols")}
+                  className="text-xs bg-[#2B3447] hover:bg-[#36425A] text-[#DDE6F3] border-[rgba(77,158,247,0.25)]"
+                >
+                  🟡 GOLS
+                </Button>
+                <Button
+                  variant={activeCategory === "cartoes" ? "default" : "outline"}
+                  size="sm"
+                  onClick={() => setActiveCategory(activeCategory === "cartoes" ? null : "cartoes")}
+                  className="text-xs bg-[#2B3447] hover:bg-[#36425A] text-[#DDE6F3] border-[rgba(77,158,247,0.25)]"
+                >
+                  🟠 CARTÕES
+                </Button>
+                <Button
+                  variant={activeCategory === "escanteios" ? "default" : "outline"}
+                  size="sm"
+                  onClick={() => setActiveCategory(activeCategory === "escanteios" ? null : "escanteios")}
+                  className="text-xs bg-[#2B3447] hover:bg-[#36425A] text-[#DDE6F3] border-[rgba(77,158,247,0.25)]"
+                >
+                  🟦 ESCANTEIOS
+                </Button>
+                <Button
+                  variant={activeCategory === "tendencia" ? "default" : "outline"}
+                  size="sm"
+                  onClick={() => setActiveCategory(activeCategory === "tendencia" ? null : "tendencia")}
+                  className="text-xs bg-[#2B3447] hover:bg-[#36425A] text-[#DDE6F3] border-[rgba(77,158,247,0.25)]"
+                >
+                  🟣 TENDÊNCIA
+                </Button>
+                <Button
+                  variant={activeCategory === "viradaEmpate" ? "default" : "outline"}
+                  size="sm"
+                  onClick={() => setActiveCategory(activeCategory === "viradaEmpate" ? null : "viradaEmpate")}
+                  className="text-xs bg-[#2B3447] hover:bg-[#36425A] text-[#DDE6F3] border-[rgba(77,158,247,0.25)]"
+                >
+                  🟢 VIRADA/EMPATE
+                </Button>
+                <Button
+                  variant={activeCategory === "oraculo" ? "default" : "outline"}
+                  size="sm"
+                  onClick={() => setActiveCategory(activeCategory === "oraculo" ? null : "oraculo")}
+                  className="text-xs bg-[#2B3447] hover:bg-[#36425A] text-[#DDE6F3] border-[rgba(77,158,247,0.25)]"
+                >
+                  🔱 ORÁCULO
+                </Button>
+              </div>
+              
+              {activeCategory && (
+                <div className="flex flex-wrap gap-2 animate-in fade-in slide-in-from-top-2 duration-200">
+                  {TACTICAL_SHORTCUTS[activeCategory as keyof typeof TACTICAL_SHORTCUTS].map((action) => {
+                    const Icon = action.icon
+                    return (
+                      <Button
+                        key={action.id}
+                        variant="outline"
+                        size="sm"
+                        onClick={() => handleQuickAction(action.id, action.label)}
+                        className="bg-[#2B3447] border-[rgba(77,158,247,0.25)] hover:bg-[#36425A] hover:border-[#4D9EF7] transition-all hover:scale-105 text-xs text-[#DDE6F3]"
+                      >
+                        <Icon className="w-3 h-3 mr-1 text-[#4D9EF7]" />
+                        {action.label}
+                      </Button>
+                    )
+                  })}
+                </div>
+              )}
             </div>
           </CardContent>
         </Card>
 
+        {/* Input Fixo no Rodapé - DARK MODE PREMIUM */}
+        <div className="bg-[#141A26] rounded-xl p-3 border border-[rgba(77,158,247,0.3)] shadow-lg">
+          <div className="flex gap-2">
+            <Input
+              value={input}
+              onChange={(e) => setInput(e.target.value)}
+              onKeyPress={(e) => {
+                if (e.key === "Enter" && !e.shiftKey) {
+                  e.preventDefault()
+                  handleSend()
+                }
+              }}
+              placeholder="Digite sua pergunta…"
+              className="bg-transparent border-none text-[#E6EAF0] placeholder:text-[#7C8CA8] focus-visible:ring-0 focus-visible:ring-offset-0"
+              disabled={isTyping}
+            />
+            <Button
+              onClick={() => handleSend()}
+              disabled={!input.trim() || isTyping}
+              className="bg-[#2B3447] hover:bg-[#36425A] transition-all hover:scale-105 shrink-0"
+            >
+              <Send className="w-4 h-4 text-[#E6EAF0]" />
+            </Button>
+          </div>
+        </div>
+
         {/* Footer Info */}
-        <div className="mt-4 text-center text-xs text-slate-400">
-          <p>Assistente Tático Pro • 30 Módulos Ativos • Baseado em GODMODE 4.0</p>
-          <p className="mt-1">10 Módulos Avançados + 20 Módulos Ultra-Elite</p>
+        <div className="text-center text-xs text-[#9FB4D1]">
+          <p>Assistente Tático Pro • 30 Módulos Ativos + HA+ Shield • Baseado em GODMODE 4.0</p>
+          <p className="mt-1">GPS do Jogo™ • Chaos Meter™ • Oráculo Pro+ • Hidden Event Detector™ • HA+ LIVE</p>
         </div>
       </div>
     </div>

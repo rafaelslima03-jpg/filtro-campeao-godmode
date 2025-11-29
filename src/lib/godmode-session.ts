@@ -48,7 +48,7 @@ export interface GodmodeAnalysisData {
   // Módulos GODMODE
   timeBombActive: boolean
   deadGameDetected: boolean
-  patternBreak: "nenhum" | "leve" | "forte"
+  patternBreak: "nenhum" | "leve" | "forte" | "sim" | "não"
   riskMapType: "explosive" | "controlled" | "chaotic" | "locked" | "dead"
   htToFtCoherence?: "ROTEIRO CONFIRMADO" | "NEUTRO" | "ROTEIRO ROMPIDO"
   
@@ -64,9 +64,15 @@ export interface GodmodeAnalysisData {
   mirrorCheckActive: boolean
   mirrorCheckArchetype?: string
   
+  // HA Friendly
+  haFriendly?: boolean
+  
   // OPC
   opcStatus: "ATIVO ✓" | "OFF ✗" | "CONDICIONAL ⚠"
   opcMessage: string
+  
+  // Underdog Score
+  underdogScore?: number
   
   // Estatísticas detalhadas
   stats: {
@@ -84,6 +90,8 @@ export interface GodmodeAnalysisData {
     yellowAway: number
     redHome: number
     redAway: number
+    foulsHome: number
+    foulsAway: number
   }
   
   // Metadados
@@ -92,7 +100,7 @@ export interface GodmodeAnalysisData {
 }
 
 const STORAGE_KEY = "godmode_analysis"
-const EXPIRATION_TIME = 4 * 60 * 60 * 1000 // 4 horas
+const EXPIRATION_TIME = 24 * 60 * 60 * 1000 // 24 horas (nunca expira na prática)
 
 export class GodmodeSession {
   /**
@@ -126,10 +134,10 @@ export class GodmodeSession {
       
       const data: GodmodeAnalysisData = JSON.parse(stored)
       
-      // Verificar se a análise expirou
+      // Verificar se a análise expirou (24h - praticamente nunca expira)
       const age = Date.now() - data.timestamp
       if (age > EXPIRATION_TIME) {
-        console.warn("⚠️ Análise GODMODE expirada (>4h)")
+        console.warn("⚠️ Análise GODMODE expirada (>24h)")
         this.clearAnalysis()
         return null
       }
