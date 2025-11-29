@@ -732,13 +732,20 @@ export default function ChatPage() {
   const router = useRouter()
   const [messages, setMessages] = useState<Message[]>([])
   const [input, setInput] = useState("")
-  const [isTyping, setIsTyping] = useState(false)
+  const [isSending, setIsSending] = useState(false)
   const [gameContext, setGameContext] = useState<GodmodeAnalysisData | null>(null)
   const [isBlocked, setIsBlocked] = useState(true)
   const [activeCategory, setActiveCategory] = useState<string | null>(null)
   const [autoAlerts, setAutoAlerts] = useState<string[]>([])
   const [autoSuggestions, setAutoSuggestions] = useState<string[]>([])
   const scrollRef = useRef<HTMLDivElement>(null)
+
+  // Scroll automático para o fim
+  const scrollToBottom = () => {
+    if (scrollRef.current) {
+      scrollRef.current.scrollTop = scrollRef.current.scrollHeight
+    }
+  }
 
   // Carregar análise ao montar componente
   useEffect(() => {
@@ -841,56 +848,57 @@ Experimente: "Análise HA+ linha +1.0"`,
   }, [])
 
   useEffect(() => {
-    if (scrollRef.current) {
-      scrollRef.current.scrollTop = scrollRef.current.scrollHeight
-    }
+    scrollToBottom()
   }, [messages])
 
-  const handleSend = (text?: string) => {
-    if (!gameContext) {
-      // Resposta automática quando não há análise
-      const userMessage: Message = {
+  // FUNÇÃO REAL DE ENVIO (ÚNICA E DEFINITIVA)
+  const handleSendMessage = async (text?: string) => {
+    const messageText = text || input.trim()
+    
+    // Não enviar mensagens vazias
+    if (!messageText) return
+    
+    // Console log antes de enviar
+    console.log("Enviando mensagem para o Assistente:", messageText)
+    
+    // Adicionar mensagem do usuário IMEDIATAMENTE usando função de atualização
+    setMessages(prevMessages => [
+      ...prevMessages,
+      {
         id: Date.now().toString(),
         role: "user",
-        content: text || input.trim(),
+        content: messageText,
         timestamp: new Date()
       }
-      
-      setMessages(prev => [...prev, userMessage])
-      setInput("")
-      setIsTyping(true)
-      
-      setTimeout(() => {
-        setMessages(prev => [...prev, {
-          id: (Date.now() + 1).toString(),
-          role: "assistant",
-          content: "⚠️ Nenhuma análise ativa. Rode o GODMODE 4.0 antes de usar o Assistente.",
-          timestamp: new Date()
-        }])
-        setIsTyping(false)
-      }, 500)
-      return
-    }
+    ])
     
-    const messageText = text || input.trim()
-    if (!messageText) return
-
-    const userMessage: Message = {
-      id: Date.now().toString(),
-      role: "user",
-      content: messageText,
-      timestamp: new Date()
-    }
-
-    setMessages(prev => [...prev, userMessage])
-    setInput("")
-    setIsTyping(true)
-
-    // Gerar resposta do assistente
-    setTimeout(() => {
-      let response: string
+    setInput("") // Limpar campo
+    setIsSending(true) // Desabilitar botão
+    
+    // Scroll automático
+    setTimeout(scrollToBottom, 100)
+    
+    try {
+      // Verificar se há análise ativa
+      if (!gameContext) {
+        setMessages(prevMessages => [
+          ...prevMessages,
+          {
+            id: (Date.now() + 1).toString(),
+            role: "system",
+            content: "⚠️ Nenhuma análise ativa. Rode o GODMODE 4.0 antes de usar o Assistente.",
+            timestamp: new Date()
+          }
+        ])
+        scrollToBottom()
+        return
+      }
       
-      // Verificar se é pergunta válida
+      // Simular processamento (em produção, seria chamada ao backend)
+      await new Promise(resolve => setTimeout(resolve, 800))
+      
+      // Gerar resposta do assistente
+      let response: string
       const lowerQuery = messageText.toLowerCase()
       const validKeywords = [
         "gol", "cartão", "escanteio", "pressão", "virada", "empate", "morrer", "explodir",
@@ -908,19 +916,44 @@ Experimente: "Análise HA+ linha +1.0"`,
         response = generateFallbackResponse()
       }
       
-      const assistantMessage: Message = {
-        id: (Date.now() + 1).toString(),
-        role: "assistant",
-        content: response,
-        timestamp: new Date()
-      }
-      setMessages(prev => [...prev, assistantMessage])
-      setIsTyping(false)
-    }, 800)
+      console.log("Resposta recebida:", response.substring(0, 100) + "...")
+      
+      // Adicionar resposta do assistente usando função de atualização
+      setMessages(prevMessages => [
+        ...prevMessages,
+        {
+          id: (Date.now() + 1).toString(),
+          role: "assistant",
+          content: response,
+          timestamp: new Date()
+        }
+      ])
+      
+      scrollToBottom()
+      
+    } catch (error) {
+      console.error("Erro ao enviar mensagem:", error)
+      
+      // Adicionar mensagem de erro no chat usando função de atualização
+      setMessages(prevMessages => [
+        ...prevMessages,
+        {
+          id: (Date.now() + 1).toString(),
+          role: "system",
+          content: "⚠️ Erro ao falar com o Assistente. Tente novamente.",
+          timestamp: new Date()
+        }
+      ])
+      
+      scrollToBottom()
+      
+    } finally {
+      setIsSending(false) // Reabilitar botão
+    }
   }
 
   const handleQuickAction = (actionId: string, label: string) => {
-    handleSend(label)
+    handleSendMessage(label)
   }
 
   const handleClearGame = () => {
@@ -1108,7 +1141,7 @@ Experimente: "Análise HA+ linha +1.0"`,
         <Card className="bg-[rgba(255,255,255,0.06)] backdrop-blur-[14px] border-[rgba(255,255,255,0.12)] flex-1 flex flex-col overflow-hidden">
           <CardContent className="flex-1 flex flex-col p-4 gap-4 overflow-hidden">
             {/* Messages - com padding-bottom para não esconder atrás do input */}
-            <ScrollArea className="flex-1 pr-4 pb-4" ref={scrollRef}>
+            <ScrollArea className="flex-1 pr-4 pb-24" ref={scrollRef}>
               <div className="space-y-4">
                 {messages.map((message) => (
                   <div
@@ -1140,7 +1173,7 @@ Experimente: "Análise HA+ linha +1.0"`,
                   </div>
                 ))}
                 
-                {isTyping && (
+                {isSending && (
                   <div className="flex justify-start animate-in fade-in duration-300">
                     <div className="bg-[#1E2433] rounded-xl px-4 py-3">
                       <div className="flex gap-1">
@@ -1164,7 +1197,8 @@ Experimente: "Análise HA+ linha +1.0"`,
                     variant="outline"
                     size="sm"
                     onClick={() => handleQuickAction(reply.id, reply.label)}
-                    className="bg-[#2B3447] border-[rgba(77,158,247,0.25)] hover:bg-[#36425A] hover:border-[#4D9EF7] transition-all hover:scale-105 text-xs text-[#DDE6F3]"
+                    disabled={isSending}
+                    className="bg-[#2B3447] border-[rgba(77,158,247,0.25)] hover:bg-[#36425A] hover:border-[#4D9EF7] transition-all hover:scale-105 text-xs text-[#DDE6F3] disabled:opacity-50"
                   >
                     <Icon className="w-3 h-3 mr-1 text-[#4D9EF7]" />
                     {reply.label}
@@ -1236,7 +1270,8 @@ Experimente: "Análise HA+ linha +1.0"`,
                         variant="outline"
                         size="sm"
                         onClick={() => handleQuickAction(action.id, action.label)}
-                        className="bg-[#2B3447] border-[rgba(77,158,247,0.25)] hover:bg-[#36425A] hover:border-[#4D9EF7] transition-all hover:scale-105 text-xs text-[#DDE6F3]"
+                        disabled={isSending}
+                        className="bg-[#2B3447] border-[rgba(77,158,247,0.25)] hover:bg-[#36425A] hover:border-[#4D9EF7] transition-all hover:scale-105 text-xs text-[#DDE6F3] disabled:opacity-50"
                       >
                         <Icon className="w-3 h-3 mr-1 text-[#4D9EF7]" />
                         {action.label}
@@ -1255,20 +1290,20 @@ Experimente: "Análise HA+ linha +1.0"`,
             <Input
               value={input}
               onChange={(e) => setInput(e.target.value)}
-              onKeyPress={(e) => {
+              onKeyDown={(e) => {
                 if (e.key === "Enter" && !e.shiftKey) {
                   e.preventDefault()
-                  handleSend()
+                  handleSendMessage()
                 }
               }}
               placeholder="Digite sua pergunta…"
               className="bg-transparent border-none text-[#E6EAF0] placeholder:text-[#7C8CA8] focus-visible:ring-0 focus-visible:ring-offset-0"
-              disabled={isTyping}
+              disabled={isSending}
             />
             <Button
-              onClick={() => handleSend()}
-              disabled={!input.trim() || isTyping}
-              className="bg-[#2B3447] hover:bg-[#36425A] transition-all hover:scale-105 shrink-0"
+              onClick={() => handleSendMessage()}
+              disabled={!input.trim() || isSending}
+              className="bg-[#2B3447] hover:bg-[#36425A] transition-all hover:scale-105 shrink-0 disabled:opacity-50"
             >
               <Send className="w-4 h-4 text-[#E6EAF0]" />
             </Button>
